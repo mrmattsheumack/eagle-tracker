@@ -1401,7 +1401,9 @@ function scienceBase(loc,forecast,hour){
   // Heavy rain: 80% suppression. Light rain: 65%. Recent rain: 28% suppression (activity resuming).
   const rawScore=Math.min(Math.max(s,5),88);
   return Math.min(Math.max(Math.round(rawScore*rainMult),isActiveRain?2:isRecentRain2?4:5),88);
-} (-38.34°, 144.96°) — NOAA algorithm ──
+}
+
+// ── Accurate sun times for Dromana (-38.34°, 144.96°) — NOAA algorithm ──
 // Accurate to ±2 min year-round vs timeanddate.com for Dromana area.
 // Previous code (12 ± halfDay − 0.4) gave errors of ~118 min in summer.
 function _solarCalc(){
