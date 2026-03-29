@@ -1002,8 +1002,10 @@ function wxSummary(wx){
   const cloud=wx.cloudClass||"";
   const cond=(wx.conditions||"").toLowerCase();
   const temp=wx.temp||20;
-  const isRain=cond.includes("rain")||cond.includes("shower")||cloud==="Rain";
-  const isStorm=cond.includes("storm")||cloud==="Storm";
+  const isRain=cond.includes("rain")||cond.includes("shower")||cloud==="Rain"||wx.rainRate>0||wx.rainClass==="Rain"||wx.rainClass==="HeavyRain";
+  const isHeavyRain=wx.rainRate>2||cond.includes("heavy")||cloud==="Storm";
+  const isRecentRain=wx.rainClass==="RecentRain"&&!isRain; // rained earlier, now stopped
+  const isStorm=cond.includes("storm")||cloud==="Storm"||wx.rainRate>5;
   const isHeavyWind=wind>35||gust>50;   // heavy gust threshold: eagles struggle above ~50km/h gusts
   const isStrongGust=gusty&&gust>35;    // strong gusts even on moderate sustained days
   const isStrongWind=wind>25;
@@ -1023,21 +1025,29 @@ function wxSummary(wx){
     hot:`<svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="12" r="8" fill="#f97316"/><path d="M14,1 L14,5 M14,21 L14,25 M1,12 L5,12 M23,12 L27,12 M4.5,4.5 L7.4,7.4 M20.6,19.6 L23.5,22.5 M23.5,4.5 L20.6,7.4 M7.4,19.6 L4.5,22.5" stroke="#f97316" strokeWidth="2" strokeLinecap="round"/><text x="14" y="16" textAnchor="middle" fontSize="7" fill="white" fontWeight="800">HOT</text></svg>`,
   };
 
-  if(isStorm)return{
-    icon:icons.storm,penalty:0.45,
-    summary:"⛈️ Thunderstorm conditions — eagles will be grounded and sheltering. Very unlikely to fly.",
+  if(isHeavyRain||isStorm)return{
+    icon:icons.storm,penalty:0.35,
+    summary:`⛈️ Heavy rain (${wx.rainRate||""}mm/h) — eagles grounded. Will resume activity 30–60min after rain clears.`,
     level:"very_bad"
   };
   if(isRain&&isHeavyWind)return{
-    icon:icons.rain,penalty:0.5,
-    summary:"🌧️ Rain with strong wind — very poor flying conditions. Eagles hunker down and conserve energy.",
+    icon:icons.rain,penalty:0.45,
+    summary:"🌧️ Rain with strong wind — very poor flying conditions. Eagles hunker down.",
     level:"very_bad"
   };
   if(isRain)return{
-    icon:icons.rain,penalty:0.65,
-    summary:"🌧️ Rainy conditions — eagles typically ground themselves during rain, hunting resumes once it clears.",
+    icon:icons.rain,penalty:0.60,
+    summary:`🌧️ Currently raining (${wx.rainRate>0?wx.rainRate+"mm/h":"light"}) — eagles grounded. Activity resumes once it clears.`,
     level:"bad"
   };
+  if(isRecentRain){
+    const resumeNote=wx.rainToday>5?"Heavy rain today — full activity likely suppressed until late afternoon.":"Cleared — eagle activity resuming, watch for hunting runs over wet ground.";
+    return{
+      icon:icons.partlycloud,penalty:0.78,
+      summary:`🌦️ Rained earlier today (${wx.rainToday?.toFixed(1)||"?"}mm) — ${resumeNote}`,
+      level:"fair"
+    };
+  }
   if(isHeavyWind)return{
     icon:icons.overcast,penalty:0.6,
     summary:`💨 Very strong wind (${wind}km/h${gust>wind+5?` G${gust}`:""}) — Wedge-tails can soar strong winds but hunting and low transits are unlikely. Expect high-altitude ridge soaring only.`,
@@ -1261,6 +1271,13 @@ function scienceBase(loc,forecast,hour){
   const strongWind=effectiveWind>25;
   const goodWind=effectiveWind>=10&&effectiveWind<=35;
 
+  // Rain state from Ecowitt — suppresses activity proportionally
+  const isActiveRain=forecast.rainRate>0||forecast.rainClass==="Rain"||forecast.rainClass==="HeavyRain";
+  const isHeavyRainNow=forecast.rainRate>2||forecast.rainClass==="HeavyRain";
+  const isRecentRain2=forecast.rainClass==="RecentRain";
+  // Rain penalty applied at end of function — define multiplier now
+  const rainMult=isHeavyRainNow?0.20:isActiveRain?0.35:isRecentRain2?0.72:1.0;
+
   // ── Universal thermal window score — solar-position aware ──
   // Sun's angle at Mornington Peninsula (-38.3°S) varies significantly by season.
   // In summer thermals peak ~11:00-15:00, in winter ~12:00-14:00 (sun lower, less intense)
@@ -1380,10 +1397,11 @@ function scienceBase(loc,forecast,hour){
     if(season==="Summer"&&hour>=8&&hour<9)s+=6;
   }
 
-  return Math.min(Math.max(s,5),88);
-}
-
-// ── Accurate sun times for Dromana (-38.34°, 144.96°) — NOAA algorithm ──
+  // Apply rain suppression — overrides all other signals
+  // Heavy rain: 80% suppression. Light rain: 65%. Recent rain: 28% suppression (activity resuming).
+  const rawScore=Math.min(Math.max(s,5),88);
+  return Math.min(Math.max(Math.round(rawScore*rainMult),isActiveRain?2:isRecentRain2?4:5),88);
+} (-38.34°, 144.96°) — NOAA algorithm ──
 // Accurate to ±2 min year-round vs timeanddate.com for Dromana area.
 // Previous code (12 ± halfDay − 0.4) gave errors of ~118 min in summer.
 function _solarCalc(){
@@ -3982,26 +4000,60 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
   // Get per-window weather from hourly data (mid-window hour)
   function winWx(startH,endH){
     const midH=Math.floor((startH+endH)/2);
-    // Active window today + Ecowitt live → use station data directly
     const isCurrentWindow=fDay===0&&nowDecimal>=startH&&nowDecimal<endH;
-    if(isCurrentWindow&&weather.source==="ecowitt"){
+    const windowStarts2=[6,8,10,12,14,16,18];
+    const nextWinStart=windowStarts2.find(h=>h>nowDecimal)||20;
+    const isNextWindow=fDay===0&&nowDecimal<startH&&startH===nextWinStart;
+    const minsUntilNextWindow=isNextWindow?Math.round((startH-nowDecimal)*60):null;
+    const ecoAvailable=weather.source==="ecowitt"&&isNearBase(fLoc);
+
+    // ── Current window: always use Ecowitt if available ──
+    if(isCurrentWindow&&ecoAvailable){
       return{temp:weather.temp,windDir:weather.windDir,windSpeed:weather.windSpeed,
              windGust:weather.windGust||null,cloudClass:weather.cloudClass,
-             conditions:weather.conditions,source:"ecowitt"};
+             conditions:weather.conditions,rainRate:weather.rainRate||0,
+             rainClass:weather.rainClass||"Dry",source:"ecowitt"};
     }
+
+    // ── Next window: blend Ecowitt + Open-Meteo if within 90min ──
+    if(isNextWindow&&ecoAvailable&&minsUntilNextWindow<=90){
+      const ecoWeight=Math.max(0,(90-minsUntilNextWindow)/90);
+      const omWeight=1-ecoWeight;
+      let omWx=null;
+      if(fDay===0&&hourly&&hourly.length>0){
+        const h=hourly.find(x=>x.hour===midH)||hourly.find(x=>x.hour>=startH)||null;
+        if(h)omWx={temp:h.temp,windDir:h.windDir,windSpeed:h.windSpeed,cloudClass:h.cloudClass||fwx.cloudClass,conditions:h.conditions||fwx.conditions};
+      }
+      if(!omWx)omWx={temp:fwx.temp,windDir:fwx.windDir,windSpeed:fwx.windSpeed,cloudClass:fwx.cloudClass,conditions:fwx.conditions};
+      const blendedTemp=Math.round(weather.temp*ecoWeight+omWx.temp*omWeight);
+      const blendedSpeed=Math.round(weather.windSpeed*ecoWeight+omWx.windSpeed*omWeight);
+      const blendedGust=weather.windGust&&omWx.windGust?Math.round(weather.windGust*ecoWeight+omWx.windGust*omWeight):weather.windGust||omWx.windGust||null;
+      const blendedDir=ecoWeight>=0.5?weather.windDir:omWx.windDir;
+      const isRaining=weather.rainRate>0||weather.rainClass==="Rain"||weather.rainClass==="HeavyRain";
+      const blendedCloud=isRaining?"Rain":(ecoWeight>=0.5?weather.cloudClass:omWx.cloudClass);
+      const blendedCond=isRaining?weather.conditions:(ecoWeight>=0.5?weather.conditions:omWx.conditions);
+      return{
+        temp:blendedTemp,windDir:blendedDir,windSpeed:blendedSpeed,windGust:blendedGust,
+        cloudClass:blendedCloud,conditions:blendedCond,
+        rainRate:weather.rainRate||0,rainClass:weather.rainClass||"Dry",
+        source:"ecowitt+forecast",ecoWeight:Math.round(ecoWeight*100),
+        minsUntil:minsUntilNextWindow,
+      };
+    }
+
+    // ── All other windows: pure Open-Meteo ──
     if(fDay===0&&hourly&&hourly.length>0){
       const h=hourly.find(x=>x.hour===midH)||hourly.find(x=>x.hour>=startH)||null;
-      if(h)return{temp:h.temp,windDir:h.windDir,windSpeed:h.windSpeed,cloudClass:h.cloudClass||fwx.cloudClass,conditions:h.conditions||fwx.conditions};
+      if(h)return{temp:h.temp,windDir:h.windDir,windSpeed:h.windSpeed,cloudClass:h.cloudClass||fwx.cloudClass,conditions:h.conditions||fwx.conditions,source:"open-meteo"};
     }
-    // Use real hourly data from daily forecast for tomorrow/day-after
     const df=dailyFx?.[fDay];
     if(df&&df.hourlyTemps){
       const t=df.hourlyTemps[midH]??df.peakTemp;
       const ws=df.hourlyWindSpeeds[midH]??df.avgWindSpeed;
       const wd=toWindLabel(df.hourlyWindDirs[midH]??0);
-      return{temp:Math.round(t),windDir:wd,windSpeed:Math.round(ws),cloudClass:df.cloudClass||fwx.cloudClass,conditions:df.conditions||fwx.conditions};
+      return{temp:Math.round(t),windDir:wd,windSpeed:Math.round(ws),cloudClass:df.cloudClass||fwx.cloudClass,conditions:df.conditions||fwx.conditions,source:"open-meteo"};
     }
-    return{temp:fwx.temp,windDir:fwx.windDir,windSpeed:fwx.windSpeed,cloudClass:fwx.cloudClass,conditions:fwx.conditions};
+    return{temp:fwx.temp,windDir:fwx.windDir,windSpeed:fwx.windSpeed,cloudClass:fwx.cloudClass,conditions:fwx.conditions,source:"open-meteo"};
   }
 
   function genWindows(loc,wx){
@@ -4304,13 +4356,18 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
                       <div>{ww.windDir} {ww.windSpeed}km/h</div>
                       <div style={{color:"#fb923c"}}>{ww.temp}°C</div>
                     </div>
-                    {(()=>{const ws=wxSourceForWindow(row.startH,row.endH);const isEco=ws==="ecowitt";
+                    {(()=>{
+                      const ww2=winWx(row.startH,row.endH);
+                      const src=ww2.source||"open-meteo";
+                      const isEco=src==="ecowitt";
+                      const isBlend=src==="ecowitt+forecast";
+                      const bgCol=isEco?"rgba(74,222,128,0.12)":isBlend?"rgba(251,191,36,0.10)":"rgba(99,102,241,0.10)";
+                      const textCol=isEco?"#4ade80":isBlend?"#fbbf24":"#818cf8";
+                      const borderCol=isEco?"rgba(74,222,128,0.25)":isBlend?"rgba(251,191,36,0.2)":"rgba(99,102,241,0.2)";
+                      const label=isEco?"🌡 Live":isBlend?`🌡+🌐 ${ww2.ecoWeight}%`:"🌐 Forecast";
                       return(<span style={{fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:10,marginTop:1,
-                        background:isEco?"rgba(74,222,128,0.12)":"rgba(99,102,241,0.10)",
-                        color:isEco?"#4ade80":"#818cf8",
-                        border:isEco?"1px solid rgba(74,222,128,0.25)":"1px solid rgba(99,102,241,0.2)",
-                        whiteSpace:"nowrap"}}>
-                        {isEco?"🌡 Live":"🌐 Forecast"}
+                        background:bgCol,color:textCol,border:`1px solid ${borderCol}`,whiteSpace:"nowrap"}}>
+                        {label}
                       </span>);
                     })()}
                   </div>
@@ -8114,15 +8171,27 @@ function App(){
       const cc=parseFloat(s?.solar?.value||0);
       const cloudClass=cc>800?"Clear":cc>400?"Thin":cc>150?"Broken":cc>50?"Thick":"Overcast";
       const sunStrength=cc>600?3:cc>300?2:cc>100?1:0;
+      const rainRate=parseFloat(d.rainfall?.rain_rate?.value||0);
+      const rainToday=parseFloat(d.rainfall?.rain?.value||d.rainfall?.daily?.value||0);
+      // Derive rain condition from Ecowitt sensors
+      // rainRate > 0 = actively raining now
+      // rainToday > 0 but rainRate = 0 = rained earlier today, now stopped
+      const ecoRainClass=rainRate>2?"HeavyRain":rainRate>0?"Rain":rainToday>1?"RecentRain":"Dry";
+      const ecoConditions=ecoRainClass==="HeavyRain"?"Heavy Rain":
+                           ecoRainClass==="Rain"?"Rain":
+                           ecoRainClass==="RecentRain"?"Clearing":
+                           cloudClass==="Clear"?"Clear":cloudClass==="Thin"?"Partly Cloudy":"Cloudy";
       return{
         temp:Math.round(temp),
         windDir:toWindLabel(wdir),
         windSpeed:Math.round(wspd),
         windGust:wgust>0?Math.round(wgust):null,
-        conditions:cloudClass==="Clear"?"Clear":cloudClass==="Thin"?"Partly Cloudy":"Cloudy",
+        conditions:ecoConditions,
         cloudClass,sunStrength,
         source:"ecowitt",
-        rainRate:parseFloat(d.rainfall?.rain_rate?.value||0),
+        rainRate,
+        rainToday,
+        rainClass:ecoRainClass,
         humidity:parseFloat(o.humidity?.value||50),
       };
     };
