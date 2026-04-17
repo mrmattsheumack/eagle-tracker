@@ -4776,7 +4776,7 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
                   <div style={{fontSize:13,fontWeight:800,color:"#fb923c"}}>🎤 Noisy Miner Alerts</div>
                   <div style={{fontSize:11,color:DS.muted,marginTop:1}}>Notify instantly when mic detects alarm calls</div>
                 </div>
-                <div onClick={()=>{const v=!(typeof audioNotifEnabled!=="undefined"?audioNotifEnabled:true);try{localStorage.setItem("eagle_audio_notif_enabled",v?"true":"false");}catch(e){}window._audioNotifEnabled=v;}} style={{width:38,height:22,borderRadius:11,background:(typeof window!=="undefined"&&window._audioNotifEnabled===false)?("rgba(255,255,255,0.1)"):("rgba(255,255,255,0.1)")+"":"#4ade80",cursor:"pointer",position:"relative",transition:"background 0.2s",border:"1px solid rgba(74,199,94,0.5)"}}>
+                <div onClick={()=>{try{const cur=localStorage.getItem("eagle_audio_notif_enabled")!=="false";localStorage.setItem("eagle_audio_notif_enabled",cur?"false":"true");}catch(e){}}} style={{width:38,height:22,borderRadius:11,background:"#4ade80",cursor:"pointer",position:"relative",border:"1px solid rgba(74,199,94,0.5)"}}>
                   <div style={{position:"absolute",top:2,left:17,width:17,height:17,borderRadius:"50%",background:"white"}}/>
                 </div>
               </div>
