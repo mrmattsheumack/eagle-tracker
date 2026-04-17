@@ -4043,10 +4043,14 @@ function AudioAlertPanel(){
     return()=>clearInterval(iv);
   },[]);
 
-  async function requestNotif(){
+  function requestNotif(){
     if(typeof Notification==="undefined"){setNotifPerm("unsupported");return;}
-    const p=await Notification.requestPermission();
-    setNotifPerm(p);
+    try{
+      const result=Notification.requestPermission(function(p){setNotifPerm(p);});
+      if(result&&result.then){result.then(function(p){setNotifPerm(p);});}
+    }catch(e){
+      Notification.requestPermission().then(function(p){setNotifPerm(p);});
+    }
   }
 
   const recentAlerts=alerts.filter(a=>(Date.now()-new Date(a.created_at).getTime())/60000<=120);
