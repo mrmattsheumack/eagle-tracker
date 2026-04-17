@@ -3960,12 +3960,11 @@ function PredictionMap({predictions, sightings, weather, alarmBoost, calibMult=1
 }
 
 // ── Audio Alert Panel — BirdNET Noisy Miner detections from Supabase ──
-function AudioAlertPanel(){
+function AudioAlertPanel({notifPermission,notifEnabled}){
   const[alerts,setAlerts]=React.useState([]);
   const[loading,setLoading]=React.useState(true);
   const[lastFetch,setLastFetch]=React.useState(null);
   const[expanded,setExpanded]=React.useState(null);
-  const[notifPerm,setNotifPerm]=React.useState(()=>typeof Notification!=="undefined"?Notification.permission:"unsupported");
   const[dismissed,setDismissed]=React.useState(false);
   const lastNotifId=React.useRef(null);
   const prevHighId=React.useRef(null);
@@ -4000,12 +3999,11 @@ function AudioAlertPanel(){
   }
 
   function fireNotification(a,level){
-    if(notifPerm!=="granted")return;
-    const meta=a.metadata||{};
+    if(notifPermission!=="granted"||!notifEnabled)return;
     const sp=a.species_guess||"Noisy Miner";
     const title=level==="high"?"🚨 Eagle Alert — "+sp:(level==="medium"?"🟠 Alarm — "+sp:"🟡 "+sp+" detected");
-    const body=level==="high"?"HIGH ALERT: Eagle likely overhead! "+fmtAge(a.created_at):meta.trigger_reason||sp+" alarm";
-    try{new Notification(title,{body,icon:"/favicon.ico",tag:"eagle-audio-alert",requireInteraction:level==="high"});}catch(e){}
+    const body=(a.metadata||{}).trigger_reason||sp+" alarm detected";
+    showEagleNotif(title,body,"eagle-audio-"+level);
   }
 
   async function fetchAlerts(){
@@ -4042,16 +4040,6 @@ function AudioAlertPanel(){
     const iv=setInterval(fetchAlerts,15000);// poll every 15s for faster alerts
     return()=>clearInterval(iv);
   },[]);
-
-  function requestNotif(){
-    if(typeof Notification==="undefined"){setNotifPerm("unsupported");return;}
-    try{
-      const result=Notification.requestPermission(function(p){setNotifPerm(p);});
-      if(result&&result.then){result.then(function(p){setNotifPerm(p);});}
-    }catch(e){
-      Notification.requestPermission().then(function(p){setNotifPerm(p);});
-    }
-  }
 
   const recentAlerts=alerts.filter(a=>(Date.now()-new Date(a.created_at).getTime())/60000<=120);
   const latestHigh=recentAlerts.find(a=>getAlertLevel(a)==="high");
@@ -4122,10 +4110,7 @@ function AudioAlertPanel(){
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
-            {notifPerm==="default"&&(
-              <button onClick={requestNotif} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(167,139,250,0.3)",background:"rgba(167,139,250,0.08)",color:"#a78bfa",fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🔔 Enable</button>
-            )}
-            {notifPerm==="granted"&&<span style={{fontSize:10,color:"#4ade80"}}>🔔</span>}
+            {notifPermission==="granted"&&notifEnabled&&<span style={{fontSize:10,color:"#4ade80",title:"Push notifications active"}}>🔔</span>}
             <button onClick={fetchAlerts} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(251,146,60,0.25)",background:"rgba(251,146,60,0.08)",color:"#fb923c",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>↻</button>
           </div>
         </div>
@@ -4461,7 +4446,7 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
 
       {/* ── AUDIO ALERT FRAMEWORK — top of predict tab ── */}
-      <AudioAlertPanel/>
+      <AudioAlertPanel notifPermission={notifPermission} notifEnabled={notifEnabled}/>
 
       {/* ── SOLAR THERMAL INDEX ── */}
       <SolarThermalCard weather={fwx}/>
@@ -4707,7 +4692,7 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
         {notifPermission==="default"&&(
           <div style={{marginBottom:10}}>
             <div style={{fontSize:14,color:DS.muted,lineHeight:1.6,marginBottom:8}}>
-              Alert fires when probability crosses your threshold — shows as an in-app banner (always) and a push notification (if your device allows it). Checks every 60 seconds.
+              Alert fires when probability crosses your threshold OR when the mic detects Noisy Miner alarm calls — shows as an in-app banner (always) and a push notification (if your device allows it). Checks every 60 seconds.
             </div>
             <button onClick={onRequestNotif} style={{width:"100%",padding:"10px",borderRadius:12,border:"1px solid rgba(167,139,250,0.3)",background:"linear-gradient(135deg,rgba(167,139,250,0.15),rgba(129,140,248,0.1))",color:"#a78bfa",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
               🔔 Enable Notifications
