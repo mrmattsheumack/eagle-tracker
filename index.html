@@ -690,15 +690,36 @@ const LOCS = [
 // ── Notification helper — module-level so all components can call it ──
 async function showEagleNotif(title, body, tag){
   try{
-    if(navigator.serviceWorker&&navigator.serviceWorker.controller){
-      const reg=await navigator.serviceWorker.ready;
-      await reg.showNotification(title,{body,tag,icon:"/favicon.ico",renotify:false});
-    } else {
-      new Notification(title,{body,tag,renotify:false});
+    if(Notification.permission!=="granted")return false;
+    // Chrome on Android requires service worker for notifications
+    // Try SW first, fall back to direct Notification
+    if(navigator.serviceWorker){
+      try{
+        const reg=await navigator.serviceWorker.ready;
+        await reg.showNotification(title,{
+          body,tag,
+          icon:"https://eagletracker.netlify.app/favicon.ico",
+          badge:"https://eagletracker.netlify.app/favicon.ico",
+          renotify:true,
+          requireInteraction:tag&&tag.includes("high"),
+        });
+        return true;
+      }catch(swErr){
+        console.warn("SW notification failed, trying direct:",swErr.message);
+      }
     }
+    // Direct fallback (works in Safari, desktop Chrome)
+    new Notification(title,{body,tag,renotify:true});
+    return true;
   }catch(e){
     console.warn("Notification failed:",e.message);
+    return false;
   }
+}
+
+// Register service worker for Chrome Android notification support
+if(typeof navigator!=="undefined"&&navigator.serviceWorker&&location.protocol==="https:"){
+  navigator.serviceWorker.register("/sw.js").catch(e=>console.warn("SW registration failed:",e.message));
 }
 
 // ── Ecowitt historical weather enrichment ──
@@ -3960,21 +3981,24 @@ function PredictionMap({predictions, sightings, weather, alarmBoost, calibMult=1
 }
 
 // ── Audio Alert Panel — BirdNET Noisy Miner detections from Supabase ──
-function AudioAlertPanel({notifPermission,notifEnabled}){
+function AudioAlertPanel(){
   const[alerts,setAlerts]=React.useState([]);
   const[loading,setLoading]=React.useState(true);
   const[lastFetch,setLastFetch]=React.useState(null);
   const[expanded,setExpanded]=React.useState(null);
+  const[notifPerm,setNotifPerm]=React.useState(()=>typeof Notification!=="undefined"?Notification.permission:"unsupported");
   const[dismissed,setDismissed]=React.useState(false);
   const lastNotifId=React.useRef(null);
   const prevHighId=React.useRef(null);
 
   function getAlertLevel(a){
     const meta=a.metadata||{};
+    // Use alert_level from metadata if present (new script format)
     const lvl=meta.alert_level||"";
     if(lvl==="high"||meta.combo_trigger)return"high";
     if(lvl==="medium")return"medium";
     if(lvl==="low")return"low";
+    // Fallback: derive from duration/count
     const dur=meta.duration_secs||0;
     const count=meta.detection_count||1;
     if(count>=3||dur>=8)return"high";
@@ -3997,11 +4021,12 @@ function AudioAlertPanel({notifPermission,notifEnabled}){
   }
 
   function fireNotification(a,level){
-    if(notifPermission!=="granted"||!notifEnabled)return;
+    if(notifPerm!=="granted")return;
+    const meta=a.metadata||{};
     const sp=a.species_guess||"Noisy Miner";
-    const title=level==="high"?"🚨 Eagle Alert — "+sp:"🟠 Alarm — "+sp;
-    const body=(a.metadata||{}).trigger_reason||sp+" alarm detected";
-    showEagleNotif(title,body,"eagle-audio-"+level);
+    const title=level==="high"?"🚨 Eagle Alert — "+sp:(level==="medium"?"🟠 Alarm — "+sp:"🟡 "+sp+" detected");
+    const body=level==="high"?"HIGH ALERT: Eagle likely overhead! "+fmtAge(a.created_at):meta.trigger_reason||sp+" alarm";
+    try{new Notification(title,{body,icon:"/favicon.ico",tag:"eagle-audio-alert",requireInteraction:level==="high"});}catch(e){}
   }
 
   async function fetchAlerts(){
@@ -4011,16 +4036,18 @@ function AudioAlertPanel({notifPermission,notifEnabled}){
         const d=await r.json();
         setAlerts(d||[]);
         setLastFetch(new Date());
+        // Check for new HIGH alert to fire push notification
         if(d&&d.length>0){
           const newest=d[0];
           const lvl=getAlertLevel(newest);
           if((lvl==="high"||lvl==="medium")&&newest.id!==lastNotifId.current){
             const age=(Date.now()-new Date(newest.created_at).getTime())/60000;
-            if(age<2){
+            if(age<2){// only notify if less than 2 mins old
               fireNotification(newest,lvl);
               lastNotifId.current=newest.id;
             }
           }
+          // Auto-show banner for new HIGH
           if(lvl==="high"&&newest.id!==prevHighId.current){
             prevHighId.current=newest.id;
             setDismissed(false);
@@ -4033,9 +4060,15 @@ function AudioAlertPanel({notifPermission,notifEnabled}){
 
   React.useEffect(()=>{
     fetchAlerts();
-    const iv=setInterval(fetchAlerts,15000);
+    const iv=setInterval(fetchAlerts,15000);// poll every 15s for faster alerts
     return()=>clearInterval(iv);
   },[]);
+
+  async function requestNotif(){
+    if(typeof Notification==="undefined"){setNotifPerm("unsupported");return;}
+    const p=await Notification.requestPermission();
+    setNotifPerm(p);
+  }
 
   const recentAlerts=alerts.filter(a=>(Date.now()-new Date(a.created_at).getTime())/60000<=120);
   const latestHigh=recentAlerts.find(a=>getAlertLevel(a)==="high");
@@ -4106,7 +4139,10 @@ function AudioAlertPanel({notifPermission,notifEnabled}){
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
-            {notifPermission==="granted"&&notifEnabled&&<span style={{fontSize:10,color:"#4ade80"}}>🔔</span>}
+            {notifPerm==="default"&&(
+              <button onClick={requestNotif} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(167,139,250,0.3)",background:"rgba(167,139,250,0.08)",color:"#a78bfa",fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🔔 Enable</button>
+            )}
+            {notifPerm==="granted"&&<span style={{fontSize:10,color:"#4ade80"}}>🔔</span>}
             <button onClick={fetchAlerts} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(251,146,60,0.25)",background:"rgba(251,146,60,0.08)",color:"#fb923c",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>↻</button>
           </div>
         </div>
@@ -4263,7 +4299,7 @@ function SolarThermalCard({weather}){
   );
 }
 
-function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,notifEnabled,notifThreshold,notifLocId,notifPermission,onRequestNotif,onToggleNotif,onSetThreshold,onSetNotifLoc,audioNotifEnabled,onToggleAudioNotif,calibStats,calibMultiplier}){
+function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,notifEnabled,notifThreshold,notifLocId,notifPermission,onRequestNotif,onToggleNotif,onSetThreshold,onSetNotifLoc,calibStats,calibMultiplier}){
   const[fDay,setFDay]=useState(0);
   const[fLoc,setFLoc]=useState(()=>notifLocId||"boundary_base");
   const selLoc=LOCS.find(l=>l.id===fLoc)||LOCS[0];
@@ -4442,7 +4478,7 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
 
       {/* ── AUDIO ALERT FRAMEWORK — top of predict tab ── */}
-      <AudioAlertPanel notifPermission={notifPermission} notifEnabled={audioNotifEnabled}/>
+      <AudioAlertPanel/>
 
       {/* ── SOLAR THERMAL INDEX ── */}
       <SolarThermalCard weather={fwx}/>
@@ -4672,100 +4708,68 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
       <Card glow="#a78bfa">
         <div style={{fontSize:15,fontWeight:700,marginBottom:10,display:"flex",alignItems:"center",gap:7}}>
           <span style={{fontSize:15}}>🔔</span>
-          <span>Push Notifications</span>
-          {notifPermission==="granted"&&<span style={{fontSize:11,padding:"2px 8px",borderRadius:20,background:"rgba(74,222,128,0.12)",border:"1px solid rgba(74,222,128,0.25)",color:"#4ade80",fontWeight:700}}>ENABLED</span>}
+          <span>Eagle Alert Notifications</span>
+          {notifEnabled&&notifPermission==="granted"&&<span style={{fontSize:15,padding:"2px 8px",borderRadius:20,background:"rgba(74,222,128,0.12)",border:"1px solid rgba(74,222,128,0.25)",color:"#4ade80",fontWeight:700}}>ACTIVE</span>}
         </div>
-
-        {/* Permission states */}
         {notifPermission==="unsupported"&&(
           <div style={{fontSize:14,color:"#fb923c",padding:"7px 10px",background:"rgba(251,146,60,0.07)",borderRadius:8,marginBottom:8}}>
-            ⚠️ Push notifications not supported in this browser. Try Chrome on Android.
+            ⚠️ Push notifications not supported in this browser. Try Chrome or Edge on Android.
           </div>
         )}
         {notifPermission==="denied"&&(
           <div style={{fontSize:14,color:"#f87171",padding:"7px 10px",background:"rgba(248,113,113,0.07)",borderRadius:8,marginBottom:8}}>
-            🚫 Notifications blocked. Go to Chrome Settings → Site Settings → Notifications → eagletracker.netlify.app → Allow.
+            🚫 Notifications blocked. Enable them in your browser settings for this site, then reload.
           </div>
         )}
         {notifPermission==="default"&&(
           <div style={{marginBottom:10}}>
             <div style={{fontSize:14,color:DS.muted,lineHeight:1.6,marginBottom:8}}>
-              Enable push notifications to receive alerts on your phone — both when eagle probability is high AND when the mic detects Noisy Miner alarm calls.
+              Alert fires when probability crosses your threshold — shows as an in-app banner (always) and a push notification (if your device allows it). Checks every 60 seconds.
             </div>
-            <button onClick={onRequestNotif} style={{width:"100%",padding:"12px",borderRadius:12,border:"1px solid rgba(167,139,250,0.3)",background:"linear-gradient(135deg,rgba(167,139,250,0.2),rgba(129,140,248,0.12))",color:"#a78bfa",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
-              🔔 Enable Push Notifications
+            <button onClick={onRequestNotif} style={{width:"100%",padding:"10px",borderRadius:12,border:"1px solid rgba(167,139,250,0.3)",background:"linear-gradient(135deg,rgba(167,139,250,0.15),rgba(129,140,248,0.1))",color:"#a78bfa",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+              🔔 Enable Notifications
             </button>
           </div>
         )}
-
         {notifPermission==="granted"&&(
-          <div style={{display:"flex",flexDirection:"column",gap:12}}>
-
-            {/* ── SECTION 1: Prediction % Alerts ── */}
-            <div style={{padding:"12px 13px",background:"rgba(167,139,250,0.06)",border:"1px solid rgba(167,139,250,0.18)",borderRadius:12}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                <div>
-                  <div style={{fontSize:13,fontWeight:800,color:"#a78bfa"}}>📊 Prediction Alerts</div>
-                  <div style={{fontSize:11,color:DS.muted,marginTop:1}}>Notify when eagle probability crosses threshold</div>
-                </div>
-                <div onClick={()=>onToggleNotif(!notifEnabled)} style={{width:38,height:22,borderRadius:11,background:notifEnabled?"#4ade80":"rgba(255,255,255,0.1)",cursor:"pointer",position:"relative",transition:"background 0.2s",border:`1px solid ${notifEnabled?"#22c55e":"rgba(255,255,255,0.08)"}`}}>
-                  <div style={{position:"absolute",top:2,left:notifEnabled?17:2,width:17,height:17,borderRadius:"50%",background:notifEnabled?"white":"rgba(255,255,255,0.4)",transition:"left 0.2s"}}/>
-                </div>
-              </div>
-              {notifEnabled&&(
-                <>
-                  <div style={{fontSize:12,color:DS.muted,marginBottom:6}}>Alert when probability ≥</div>
-                  <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
-                    {[60,70,75,80,85,90].map(v=>(
-                      <button key={v} onClick={()=>onSetThreshold(v)}
-                        style={{padding:"5px 11px",borderRadius:20,border:`1px solid ${notifThreshold===v?"rgba(167,139,250,0.5)":"rgba(255,255,255,0.07)"}`,
-                        background:notifThreshold===v?"linear-gradient(135deg,rgba(167,139,250,0.22),rgba(129,140,248,0.15))":"rgba(255,255,255,0.04)",
-                        color:notifThreshold===v?"#a78bfa":DS.sub,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                        {v}%
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{fontSize:12,color:"#4ade80",marginBottom:6}}>
-                    ✅ Watching <strong>{selLoc.name}</strong> — fires when window exceeds {notifThreshold}%
-                  </div>
-                  <button onClick={()=>showEagleNotif("📊 Prediction Alert Test","Eagle probability is above "+notifThreshold+"% at "+selLoc.name+" — this is what a prediction alert looks like!","pred-test")}
-                    style={{width:"100%",padding:"7px",borderRadius:9,border:"1px solid rgba(167,139,250,0.25)",background:"rgba(167,139,250,0.08)",color:"#a78bfa",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                    🧪 Test Prediction Alert
-                  </button>
-                </>
-              )}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{fontSize:14,color:DS.muted,lineHeight:1.6}}>
+              Alert fires when the <strong style={{color:"#a78bfa"}}>{selLoc.name}</strong> current-window probability reaches your threshold. Checks every 60 seconds while the app is open. The watched location automatically updates when you change the location selector above.
             </div>
-
-            {/* ── SECTION 2: Mic / Noisy Miner Alerts ── */}
-            <div style={{padding:"12px 13px",background:"rgba(251,146,60,0.06)",border:"1px solid rgba(251,146,60,0.18)",borderRadius:12}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                <div>
-                  <div style={{fontSize:13,fontWeight:800,color:"#fb923c"}}>🎤 Noisy Miner Alerts</div>
-                  <div style={{fontSize:11,color:DS.muted,marginTop:1}}>Notify instantly when mic detects alarm calls</div>
-                </div>
-                <div onClick={()=>onToggleAudioNotif&&onToggleAudioNotif(!audioNotifEnabled)} style={{width:38,height:22,borderRadius:11,background:audioNotifEnabled?"#4ade80":"rgba(255,255,255,0.1)",cursor:"pointer",position:"relative",transition:"background 0.2s",border:`1px solid ${audioNotifEnabled?"#22c55e":"rgba(255,255,255,0.08)"}`}}>
-                  <div style={{position:"absolute",top:2,left:audioNotifEnabled?17:2,width:17,height:17,borderRadius:"50%",background:audioNotifEnabled?"white":"rgba(255,255,255,0.4)",transition:"left 0.2s"}}/>
-                </div>
+            {/* Toggle */}
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:"rgba(255,255,255,0.04)",borderRadius:10,border:"1px solid rgba(255,255,255,0.06)"}}>
+              <span style={{fontSize:15,fontWeight:600,color:DS.sub}}>Notifications {notifEnabled?"on":"off"}</span>
+              <div onClick={()=>onToggleNotif(!notifEnabled)} style={{width:38,height:22,borderRadius:11,background:notifEnabled?"#4ade80":"rgba(255,255,255,0.1)",cursor:"pointer",position:"relative",transition:"background 0.2s",border:`1px solid ${notifEnabled?"#22c55e":"rgba(255,255,255,0.08)"}`}}>
+                <div style={{position:"absolute",top:2,left:notifEnabled?17:2,width:17,height:17,borderRadius:"50%",background:notifEnabled?"white":"rgba(255,255,255,0.4)",transition:"left 0.2s"}}/>
               </div>
-              {audioNotifEnabled&&(
-                <>
-                  <div style={{fontSize:12,color:DS.muted,marginBottom:8,lineHeight:1.5}}>
-                    🔴 HIGH — NM + Raven/Cockatoo combo or 9s+ sustained calling<br/>
-                    🟠 MEDIUM — 6s+ sustained NM calling<br/>
-                    🟡 LOW — Single NM detection (no notification sent)
-                  </div>
-                  <button onClick={()=>showEagleNotif("🚨 Eagle Alert — Noisy Miner","HIGH ALERT: Eagle likely overhead! Noisy Miner + Australian Raven combination detected at 84% confidence","eagle-audio-high")}
-                    style={{width:"100%",padding:"7px",borderRadius:9,border:"1px solid rgba(248,113,113,0.3)",background:"rgba(248,113,113,0.08)",color:"#f87171",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginBottom:5}}>
-                    🧪 Test HIGH Alert (Eagle overhead!)
-                  </button>
-                  <button onClick={()=>showEagleNotif("🟠 Alarm — Noisy Miner","MEDIUM: 6s sustained Noisy Miner alarm calling detected","eagle-audio-medium")}
-                    style={{width:"100%",padding:"7px",borderRadius:9,border:"1px solid rgba(251,146,60,0.25)",background:"rgba(251,146,60,0.06)",color:"#fb923c",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                    🧪 Test MEDIUM Alert (Sustained calling)
-                  </button>
-                </>
-              )}
             </div>
-
+            {/* Threshold picker */}
+            <div>
+              <div style={{fontSize:14,color:DS.muted,fontWeight:600,marginBottom:6}}>Alert threshold — notify when probability ≥</div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {[60,70,75,80,85,90].map(v=>(
+                  <button key={v} onClick={()=>onSetThreshold(v)}
+                    style={{padding:"6px 12px",borderRadius:20,border:`1px solid ${notifThreshold===v?"rgba(167,139,250,0.5)":"rgba(255,255,255,0.07)"}`,
+                    background:notifThreshold===v?"linear-gradient(135deg,rgba(167,139,250,0.22),rgba(129,140,248,0.15))":"rgba(255,255,255,0.04)",
+                    color:notifThreshold===v?"#a78bfa":DS.sub,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit",
+                    boxShadow:notifThreshold===v?"0 0 0 1px rgba(167,139,250,0.25)":"none"}}>
+                    {v}%
+                  </button>
+                ))}
+              </div>
+            </div>
+            {notifEnabled&&notifThreshold>0&&(
+              <div style={{fontSize:14,color:"#4ade80",padding:"7px 10px",background:"rgba(74,222,128,0.06)",borderRadius:8,border:"1px solid rgba(74,222,128,0.15)"}}>
+                ✅ Watching <strong>{selLoc.name}</strong> — alert fires when the current window exceeds {notifThreshold}%.
+              </div>
+            )}
+            {/* Test notification button */}
+            {notifEnabled&&(
+              <button onClick={()=>showEagleNotif("🦅 Eagle Alert Test","Notifications are working! Alert will fire when probability crosses "+notifThreshold+"%","eagle-test")}
+                style={{padding:"7px",borderRadius:10,border:"1px solid rgba(255,255,255,0.07)",background:"rgba(255,255,255,0.04)",color:DS.muted,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+                Send test notification
+              </button>
+            )}
           </div>
         )}
       </Card>
@@ -8416,9 +8420,6 @@ function App(){
   const[notifEnabled,setNotifEnabled]=useState(()=>{
     try{return localStorage.getItem("eagle_notif_enabled")==="true";}catch(e){return false;}
   });
-  const[audioNotifEnabled,setAudioNotifEnabled]=useState(()=>{
-    try{return localStorage.getItem("eagle_audio_notif_enabled")!=="false";}catch(e){return true;}
-  });
   const[notifLocId,setNotifLocId]=useState(()=>{
     try{return localStorage.getItem("eagle_notif_loc")||"boundary_base";}catch(e){return "boundary_base";}
   });
@@ -8973,7 +8974,6 @@ function App(){
     if(perm==="granted"){setNotifEnabled(true);try{localStorage.setItem("eagle_notif_enabled","true");}catch(e){}}
   };
   const toggleNotif=(val)=>{setNotifEnabled(val);try{localStorage.setItem("eagle_notif_enabled",val?"true":"false");}catch(e){}};
-  const toggleAudioNotif=(val)=>{setAudioNotifEnabled(val);try{localStorage.setItem("eagle_audio_notif_enabled",val?"true":"false");}catch(e){}};
   const setNotifLoc=(id)=>{setNotifLocId(id);try{localStorage.setItem("eagle_notif_loc",id);}catch(e){}};
   const setThreshold=(v)=>{setNotifThreshold(v);try{localStorage.setItem("eagle_notif_threshold",String(v));}catch(e){}};
 
@@ -9860,7 +9860,7 @@ function App(){
 
         {tab==="accuracy"&&<AnalysisTab sightings={sightings} calibStats={calibStats} calibMultiplier={calibMultiplier} accuracyOnly={true}/>}
 
-        {tab==="forecast"&&<PredictTab sightings={sightings} weather={weather} predictions={predictions} alarmBoost={alarmBoost} hourly={hourly} dailyFx={dailyFx} notifEnabled={notifEnabled} notifThreshold={notifThreshold} notifLocId={notifLocId} notifPermission={notifPermission} onRequestNotif={requestNotifPermission} onToggleNotif={toggleNotif} onSetThreshold={setThreshold} onSetNotifLoc={setNotifLoc} audioNotifEnabled={audioNotifEnabled} onToggleAudioNotif={toggleAudioNotif} calibStats={calibStats} calibMultiplier={calibMultiplier} locsVersion={locsVersion}/>}
+        {tab==="forecast"&&<PredictTab sightings={sightings} weather={weather} predictions={predictions} alarmBoost={alarmBoost} hourly={hourly} dailyFx={dailyFx} notifEnabled={notifEnabled} notifThreshold={notifThreshold} notifLocId={notifLocId} notifPermission={notifPermission} onRequestNotif={requestNotifPermission} onToggleNotif={toggleNotif} onSetThreshold={setThreshold} onSetNotifLoc={setNotifLoc} calibStats={calibStats} calibMultiplier={calibMultiplier} locsVersion={locsVersion}/>}
 
         {tab==="history"&&(
           <HistoryPanel
