@@ -3965,6 +3965,48 @@ function AudioAlertPanel(){
   const[loading,setLoading]=React.useState(true);
   const[lastFetch,setLastFetch]=React.useState(null);
   const[expanded,setExpanded]=React.useState(null);
+  const[notifPerm,setNotifPerm]=React.useState(()=>typeof Notification!=="undefined"?Notification.permission:"unsupported");
+  const[dismissed,setDismissed]=React.useState(false);
+  const lastNotifId=React.useRef(null);
+  const prevHighId=React.useRef(null);
+
+  function getAlertLevel(a){
+    const meta=a.metadata||{};
+    // Use alert_level from metadata if present (new script format)
+    const lvl=meta.alert_level||"";
+    if(lvl==="high"||meta.combo_trigger)return"high";
+    if(lvl==="medium")return"medium";
+    if(lvl==="low")return"low";
+    // Fallback: derive from duration/count
+    const dur=meta.duration_secs||0;
+    const count=meta.detection_count||1;
+    if(count>=3||dur>=8)return"high";
+    if(count>=2||dur>=4)return"medium";
+    return"low";
+  }
+
+  const LEVELS={
+    high:{color:"#f87171",bg:"rgba(248,113,113,0.15)",border:"rgba(248,113,113,0.4)",label:"🔴 HIGH ALERT",desc:"Eagle likely overhead!",bannerBg:"linear-gradient(135deg,rgba(248,113,113,0.25),rgba(239,68,68,0.15))"},
+    medium:{color:"#fb923c",bg:"rgba(251,146,60,0.10)",border:"rgba(251,146,60,0.30)",label:"🟠 MEDIUM",desc:"Sustained alarm calling",bannerBg:"linear-gradient(135deg,rgba(251,146,60,0.20),rgba(249,115,22,0.12))"},
+    low:{color:"#fbbf24",bg:"rgba(251,191,36,0.07)",border:"rgba(251,191,36,0.22)",label:"🟡 LOW",desc:"Single alarm detected",bannerBg:""},
+  };
+
+  function fmtAge(ts){
+    if(!ts)return"";
+    const mins=Math.round((Date.now()-new Date(ts).getTime())/60000);
+    if(mins<1)return"Just now";
+    if(mins<60)return`${mins}m ago`;
+    return`${Math.floor(mins/60)}h ${mins%60}m ago`;
+  }
+
+  function fireNotification(a,level){
+    if(notifPerm!=="granted")return;
+    const meta=a.metadata||{};
+    const sp=a.species_guess||"Noisy Miner";
+    const title=level==="high"?"🚨 Eagle Alert — "+sp:(level==="medium"?"🟠 Alarm — "+sp:"🟡 "+sp+" detected");
+    const body=level==="high"?"HIGH ALERT: Eagle likely overhead! "+fmtAge(a.created_at):meta.trigger_reason||sp+" alarm";
+    try{new Notification(title,{body,icon:"/favicon.ico",tag:"eagle-audio-alert",requireInteraction:level==="high"});}catch(e){}
+  }
 
   async function fetchAlerts(){
     try{
@@ -3973,6 +4015,23 @@ function AudioAlertPanel(){
         const d=await r.json();
         setAlerts(d||[]);
         setLastFetch(new Date());
+        // Check for new HIGH alert to fire push notification
+        if(d&&d.length>0){
+          const newest=d[0];
+          const lvl=getAlertLevel(newest);
+          if((lvl==="high"||lvl==="medium")&&newest.id!==lastNotifId.current){
+            const age=(Date.now()-new Date(newest.created_at).getTime())/60000;
+            if(age<2){// only notify if less than 2 mins old
+              fireNotification(newest,lvl);
+              lastNotifId.current=newest.id;
+            }
+          }
+          // Auto-show banner for new HIGH
+          if(lvl==="high"&&newest.id!==prevHighId.current){
+            prevHighId.current=newest.id;
+            setDismissed(false);
+          }
+        }
       }
     }catch(e){}
     setLoading(false);
@@ -3980,9 +4039,20 @@ function AudioAlertPanel(){
 
   React.useEffect(()=>{
     fetchAlerts();
-    const iv=setInterval(fetchAlerts,30000); // poll every 30s
+    const iv=setInterval(fetchAlerts,15000);// poll every 15s for faster alerts
     return()=>clearInterval(iv);
   },[]);
+
+  async function requestNotif(){
+    if(typeof Notification==="undefined"){setNotifPerm("unsupported");return;}
+    const p=await Notification.requestPermission();
+    setNotifPerm(p);
+  }
+
+  const recentAlerts=alerts.filter(a=>(Date.now()-new Date(a.created_at).getTime())/60000<=120);
+  const latestHigh=recentAlerts.find(a=>getAlertLevel(a)==="high");
+  const latestHighAge=latestHigh?Math.round((Date.now()-new Date(latestHigh.created_at).getTime())/60000):null;
+  const showBanner=latestHigh&&!dismissed&&(latestHighAge||0)<=15;
 
   if(loading)return(
     <div style={{padding:"10px 14px",background:"rgba(251,146,60,0.05)",border:"1px solid rgba(251,146,60,0.15)",borderRadius:14,marginBottom:2}}>
@@ -3990,102 +4060,124 @@ function AudioAlertPanel(){
     </div>
   );
 
-  // Compute alert level from metadata
-  function alertLevel(a){
-    const meta=a.metadata||{};
-    const dur=meta.duration_secs||0;
-    const count=meta.detection_count||1;
-    const conf=a.confidence||0;
-    if(count>=3||dur>=8||(count>=2&&dur>=5))return{level:"high",color:"#f87171",bg:"rgba(248,113,113,0.10)",border:"rgba(248,113,113,0.30)",label:"🔴 HIGH ALERT",desc:"Agitated mob detected"};
-    if(count>=2||dur>=4)return{level:"medium",color:"#fb923c",bg:"rgba(251,146,60,0.09)",border:"rgba(251,146,60,0.28)",label:"🟠 MEDIUM",desc:"Multiple birds or sustained calling"};
-    return{level:"low",color:"#fbbf24",bg:"rgba(251,191,36,0.07)",border:"rgba(251,191,36,0.22)",label:"🟡 LOW",desc:"Single brief alarm"};
-  }
-
-  function fmtAge(ts){
-    if(!ts)return"";
-    const mins=Math.round((Date.now()-new Date(ts).getTime())/60000);
-    if(mins<1)return"Just now";
-    if(mins<60)return`${mins}m ago`;
-    const hrs=Math.floor(mins/60);
-    return`${hrs}h ${mins%60}m ago`;
-  }
-
-  const recentAlerts=alerts.filter(a=>{
-    const age=(Date.now()-new Date(a.created_at).getTime())/60000;
-    return age<=120; // last 2 hours
-  });
-
-  const highCount=recentAlerts.filter(a=>alertLevel(a).level==="high").length;
-  const anyAlerts=recentAlerts.length>0;
-
   return(
-    <div style={{background:anyAlerts?"rgba(251,146,60,0.07)":"rgba(255,255,255,0.03)",border:`1px solid ${anyAlerts?"rgba(251,146,60,0.25)":"rgba(255,255,255,0.08)"}`,borderRadius:14,padding:"12px 14px",marginBottom:2}}>
-      {/* Header */}
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:anyAlerts?10:0}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontSize:16}}>🎤</span>
-          <div>
-            <div style={{fontSize:14,fontWeight:800,color:anyAlerts?"#fb923c":DS.sub}}>
-              Audio Alerts — Noisy Miner
-              {highCount>0&&<span style={{marginLeft:7,background:"#f87171",color:"#fff",fontSize:10,fontWeight:800,padding:"1px 6px",borderRadius:20}}>{highCount} HIGH</span>}
-            </div>
-            <div style={{fontSize:11,color:DS.muted,marginTop:1}}>
-              {anyAlerts?`${recentAlerts.length} detection${recentAlerts.length!==1?"s":""} in last 2h`:"No recent detections"}
-              {lastFetch&&<span style={{marginLeft:6,opacity:0.5}}>· {fmtAge(lastFetch)}</span>}
-            </div>
+    <>
+      {/* ── FULL-WIDTH HIGH ALERT BANNER ── */}
+      {showBanner&&(
+        <div style={{
+          position:"relative",
+          width:"100%",
+          minHeight:"22vh",
+          background:"linear-gradient(135deg,rgba(239,68,68,0.3),rgba(220,38,38,0.2))",
+          border:"2px solid rgba(248,113,113,0.6)",
+          borderRadius:16,
+          padding:"18px 16px",
+          marginBottom:8,
+          display:"flex",
+          flexDirection:"column",
+          alignItems:"center",
+          justifyContent:"center",
+          textAlign:"center",
+          animation:"alarmPulse 1.5s ease-in-out infinite",
+          boxShadow:"0 0 30px rgba(248,113,113,0.3)",
+        }}>
+          <button onClick={()=>setDismissed(true)} style={{position:"absolute",top:10,right:12,background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,padding:"4px 10px",color:"rgba(255,255,255,0.6)",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
+          <div style={{fontSize:40,marginBottom:6,animation:"eagleFloat 2s ease-in-out infinite"}}>🦅</div>
+          <div style={{fontSize:22,fontWeight:900,color:"#f87171",letterSpacing:1,marginBottom:4}}>EAGLE ALERT</div>
+          <div style={{fontSize:15,fontWeight:700,color:"#fff",marginBottom:6}}>
+            {latestHigh.species_guess||"Noisy Miner"}
+          </div>
+          <div style={{fontSize:13,color:"rgba(255,255,255,0.7)",marginBottom:8}}>
+            {(latestHigh.metadata||{}).trigger_reason||"HIGH alarm detected"}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:6,background:"rgba(248,113,113,0.2)",padding:"4px 12px",borderRadius:20,border:"1px solid rgba(248,113,113,0.4)"}}>
+            <div style={{width:7,height:7,borderRadius:"50%",background:"#f87171",animation:"pulse2 1s infinite"}}/>
+            <span style={{fontSize:12,fontWeight:700,color:"#f87171"}}>{fmtAge(latestHigh.created_at)}</span>
+            {latestHigh.confidence&&<span style={{fontSize:12,color:"rgba(255,255,255,0.5)"}}>· {Math.round(latestHigh.confidence*100)}% confidence</span>}
           </div>
         </div>
-        <button onClick={fetchAlerts} style={{padding:"3px 9px",borderRadius:8,border:"1px solid rgba(251,146,60,0.25)",background:"rgba(251,146,60,0.08)",color:"#fb923c",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>↻</button>
-      </div>
+      )}
 
-      {/* Alert cards */}
-      {recentAlerts.length>0&&(
-        <div style={{display:"flex",flexDirection:"column",gap:5}}>
-          {recentAlerts.slice(0,5).map(a=>{
-            const al=alertLevel(a);
-            const meta=a.metadata||{};
-            const isOpen=expanded===a.id;
-            return(
-              <div key={a.id} onClick={()=>setExpanded(isOpen?null:a.id)}
-                style={{padding:"8px 11px",background:al.bg,border:`1px solid ${al.border}`,borderRadius:10,cursor:"pointer"}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:7}}>
-                    <span style={{fontSize:11,fontWeight:800,color:al.color,background:`${al.color}18`,padding:"1px 7px",borderRadius:20}}>{al.label}</span>
-                    <span style={{fontSize:12,color:al.color,fontWeight:600}}>{al.desc}</span>
-                  </div>
-                  <span style={{fontSize:11,color:DS.muted}}>{fmtAge(a.created_at)}</span>
-                </div>
-                {isOpen&&(
-                  <div style={{marginTop:7,paddingTop:7,borderTop:`1px solid ${al.border}`,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5}}>
-                    {[
-                      {l:"Confidence",v:a.confidence?`${Math.round(a.confidence*100)}%`:"—",c:al.color},
-                      {l:"Detections",v:meta.detection_count||1,c:al.color},
-                      {l:"Duration",v:meta.duration_secs?`${meta.duration_secs}s`:"—",c:al.color},
-                      {l:"Species",v:a.species_guess||"Noisy Miner",c:DS.sub},
-                      {l:"Source",v:"BirdNET",c:DS.muted},
-                      {l:"Status",v:a.confirmed?"✅ Confirmed":a.dismissed?"❌ Dismissed":"Pending",c:a.confirmed?"#4ade80":a.dismissed?"#64748b":"#fbbf24"},
-                    ].map(x=>(
-                      <div key={x.l} style={{background:"rgba(0,0,0,0.2)",borderRadius:7,padding:"5px 7px"}}>
-                        <div style={{fontSize:9,color:DS.muted,fontWeight:700,marginBottom:1}}>{x.l.toUpperCase()}</div>
-                        <div style={{fontSize:12,fontWeight:700,color:x.c}}>{x.v}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+      {/* ── MAIN PANEL ── */}
+      <div style={{background:recentAlerts.length>0?"rgba(251,146,60,0.06)":"rgba(255,255,255,0.03)",border:`1px solid ${recentAlerts.length>0?"rgba(251,146,60,0.22)":"rgba(255,255,255,0.08)"}`,borderRadius:14,padding:"11px 13px",marginBottom:2}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:recentAlerts.length>0?9:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:15}}>🎤</span>
+            <div>
+              <div style={{fontSize:13,fontWeight:800,color:recentAlerts.length>0?"#fb923c":DS.sub}}>
+                Audio Alerts
+                {recentAlerts.filter(a=>getAlertLevel(a)==="high").length>0&&
+                  <span style={{marginLeft:6,background:"#f87171",color:"#fff",fontSize:10,fontWeight:800,padding:"1px 6px",borderRadius:20}}>
+                    {recentAlerts.filter(a=>getAlertLevel(a)==="high").length} HIGH
+                  </span>}
               </div>
-            );
-          })}
+              <div style={{fontSize:10,color:DS.muted,marginTop:1}}>
+                {recentAlerts.length>0?`${recentAlerts.length} in last 2h`:"Monitoring active"}
+                {lastFetch&&<span style={{marginLeft:5,opacity:0.4}}>· {fmtAge(lastFetch)}</span>}
+              </div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {notifPerm==="default"&&(
+              <button onClick={requestNotif} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(167,139,250,0.3)",background:"rgba(167,139,250,0.08)",color:"#a78bfa",fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🔔 Enable</button>
+            )}
+            {notifPerm==="granted"&&<span style={{fontSize:10,color:"#4ade80"}}>🔔</span>}
+            <button onClick={fetchAlerts} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(251,146,60,0.25)",background:"rgba(251,146,60,0.08)",color:"#fb923c",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>↻</button>
+          </div>
         </div>
-      )}
 
-      {/* No alerts state — but mic is running */}
-      {recentAlerts.length===0&&(
-        <div style={{display:"flex",alignItems:"center",gap:7,marginTop:8,padding:"7px 10px",background:"rgba(255,255,255,0.03)",borderRadius:8,border:"1px solid rgba(255,255,255,0.06)"}}>
-          <div style={{width:6,height:6,borderRadius:"50%",background:"#4ade80",animation:"pulse2 3s infinite",flexShrink:0}}/>
-          <span style={{fontSize:12,color:DS.muted}}>Mic monitoring active · No Noisy Miner alarms in last 2 hours</span>
-        </div>
-      )}
-    </div>
+        {recentAlerts.length>0&&(
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {recentAlerts.slice(0,5).map(a=>{
+              const lvl=getAlertLevel(a);
+              const al=LEVELS[lvl]||LEVELS.low;
+              const meta=a.metadata||{};
+              const isOpen=expanded===a.id;
+              const isCombo=meta.combo_trigger;
+              return(
+                <div key={a.id} onClick={()=>setExpanded(isOpen?null:a.id)}
+                  style={{padding:"8px 10px",background:al.bg,border:`1px solid ${al.border}`,borderRadius:9,cursor:"pointer"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
+                      <span style={{fontSize:10,fontWeight:800,color:al.color,background:`${al.color}18`,padding:"1px 6px",borderRadius:20,flexShrink:0}}>{al.label}</span>
+                      <span style={{fontSize:11,color:al.color,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {isCombo?"🚨 COMBO: ":""}
+                        {(a.species_guess||"Noisy Miner").split("+")[0].trim()}
+                      </span>
+                    </div>
+                    <span style={{fontSize:10,color:DS.muted,flexShrink:0,marginLeft:4}}>{fmtAge(a.created_at)}</span>
+                  </div>
+                  {isOpen&&(
+                    <div style={{marginTop:6,paddingTop:6,borderTop:`1px solid ${al.border}`,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4}}>
+                      {[
+                        {l:"Confidence",v:a.confidence?`${Math.round(a.confidence*100)}%`:"—",c:al.color},
+                        {l:"Level",v:lvl.toUpperCase(),c:al.color},
+                        {l:"Trigger",v:meta.trigger_reason||"detection",c:DS.sub},
+                        {l:"Species",v:(a.species_guess||"NM").split("+")[0].trim(),c:DS.sub},
+                        {l:"Combo",v:isCombo?"YES ⚡":"No",c:isCombo?"#f87171":DS.muted},
+                        {l:"Source",v:"BirdNET",c:DS.muted},
+                      ].map(x=>(
+                        <div key={x.l} style={{background:"rgba(0,0,0,0.2)",borderRadius:6,padding:"4px 6px"}}>
+                          <div style={{fontSize:8,color:DS.muted,fontWeight:700,marginBottom:1}}>{x.l.toUpperCase()}</div>
+                          <div style={{fontSize:11,fontWeight:700,color:x.c}}>{x.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {recentAlerts.length===0&&(
+          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:6,padding:"6px 9px",background:"rgba(255,255,255,0.03)",borderRadius:7,border:"1px solid rgba(255,255,255,0.05)"}}>
+            <div style={{width:5,height:5,borderRadius:"50%",background:"#4ade80",animation:"pulse2 3s infinite",flexShrink:0}}/>
+            <span style={{fontSize:11,color:DS.muted}}>Mic active · No alarms in last 2h</span>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
