@@ -3986,7 +3986,6 @@ function AudioAlertPanel(){
   const[loading,setLoading]=React.useState(true);
   const[lastFetch,setLastFetch]=React.useState(null);
   const[expanded,setExpanded]=React.useState(null);
-  const[notifPerm,setNotifPerm]=React.useState(()=>typeof Notification!=="undefined"?Notification.permission:"unsupported");
   const[dismissed,setDismissed]=React.useState(false);
   const lastNotifId=React.useRef(null);
   const prevHighId=React.useRef(null);
@@ -4021,12 +4020,11 @@ function AudioAlertPanel(){
   }
 
   function fireNotification(a,level){
-    if(notifPerm!=="granted")return;
-    const meta=a.metadata||{};
+    if(Notification.permission!=="granted")return;
     const sp=a.species_guess||"Noisy Miner";
-    const title=level==="high"?"🚨 Eagle Alert — "+sp:(level==="medium"?"🟠 Alarm — "+sp:"🟡 "+sp+" detected");
-    const body=level==="high"?"HIGH ALERT: Eagle likely overhead! "+fmtAge(a.created_at):meta.trigger_reason||sp+" alarm";
-    try{new Notification(title,{body,icon:"/favicon.ico",tag:"eagle-audio-alert",requireInteraction:level==="high"});}catch(e){}
+    const title=level==="high"?"🚨 Eagle Alert — "+sp:"🟠 Alarm — "+sp;
+    const body=(a.metadata||{}).trigger_reason||sp+" alarm detected";
+    showEagleNotif(title,body,"eagle-audio-"+level);
   }
 
   async function fetchAlerts(){
@@ -4064,11 +4062,7 @@ function AudioAlertPanel(){
     return()=>clearInterval(iv);
   },[]);
 
-  async function requestNotif(){
-    if(typeof Notification==="undefined"){setNotifPerm("unsupported");return;}
-    const p=await Notification.requestPermission();
-    setNotifPerm(p);
-  }
+
 
   const recentAlerts=alerts.filter(a=>(Date.now()-new Date(a.created_at).getTime())/60000<=120);
   const latestHigh=recentAlerts.find(a=>getAlertLevel(a)==="high");
@@ -4139,10 +4133,7 @@ function AudioAlertPanel(){
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
-            {notifPerm==="default"&&(
-              <button onClick={requestNotif} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(167,139,250,0.3)",background:"rgba(167,139,250,0.08)",color:"#a78bfa",fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🔔 Enable</button>
-            )}
-            {notifPerm==="granted"&&<span style={{fontSize:10,color:"#4ade80"}}>🔔</span>}
+            {Notification.permission==="granted"&&<span style={{fontSize:10,color:"#4ade80"}}>🔔</span>}
             <button onClick={fetchAlerts} style={{padding:"3px 8px",borderRadius:7,border:"1px solid rgba(251,146,60,0.25)",background:"rgba(251,146,60,0.08)",color:"#fb923c",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>↻</button>
           </div>
         </div>
