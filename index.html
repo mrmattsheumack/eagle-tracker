@@ -1946,7 +1946,7 @@ function behaviourInsight(sightings, locId, currentHour){
 }
 
 // ── Overall location probability ──
-function predictLoc(loc,sightings,forecast,alarmBoost){
+function predictLoc(loc,sightings,forecast,alarmBoost,mobBoost){
   const hour=getMelbNow().getUTCHours();
   const sciBase_=scienceBase(loc,forecast,hour);
   const locSightings=sightings.filter(s=>{
@@ -2014,6 +2014,17 @@ function predictLoc(loc,sightings,forecast,alarmBoost){
     alarmNote=`⚠️ Alarm ${alarmBoost.dir} · wind may carry eagle here.`;
   }
 
+  // Live mobbing boost (BirdCall Alert feed): strongest at Base, fades with time + distance
+  let mobAdd=0,mobNote="";
+  if(mobBoost&&mobBoost.active){
+    mobAdd=mobBoostFor(loc,mobBoost);
+    if(mobAdd>0){
+      recentBoost+=mobAdd;
+      mobNote=`📣 ${mobBoost.strong?"Strong mobbing":"Mobbing"} ${mobBoost.ageMin<1?"just now":mobBoost.ageMin+" min ago"} · +${mobAdd}%`;
+      alarmNote=alarmNote?alarmNote+" "+mobNote:mobNote;
+    }
+  }
+
   // Insight boost from recent behaviour sighting
   const locInsightBoost=(()=>{
     const ins=behaviourInsight(sightings,loc.id,hour);
@@ -2022,7 +2033,7 @@ function predictLoc(loc,sightings,forecast,alarmBoost){
 
   if(totalSightings<3){
     const p=Math.min(95,Math.max(3,sciBase_+recentBoost+locInsightBoost));
-    return{probability:p,confidence:0.15,records:0,presences:0,absences:0,recentNote,alarmNote,explanation:"Science model (building data)"+(recentNote?" · "+recentNote:"")};
+    return{probability:p,confidence:0.15,records:0,presences:0,absences:0,recentNote,alarmNote,mobAdd,mobNote,explanation:"Science model (building data)"+(recentNote?" · "+recentNote:"")};
   }
   let sig=0,wt=0;
   locSightings.forEach(s=>{const m=conditionMatch(forecast,s);const r=recW(s.timestamp);sig+=m*r;wt+=r;});
@@ -2035,7 +2046,7 @@ function predictLoc(loc,sightings,forecast,alarmBoost){
   const absPenalty=condMatchedAbs.length>0?Math.max(0.60,1.0-(condMatchedAbs.length/Math.max(locSightings.length+condMatchedAbs.length,1))*0.45):1.0;
   if(wt===0){
     const p=Math.round(Math.min(95,Math.max(3,(sciBase_*0.7+locationRate*30)*absPenalty+recentBoost)));
-    return{probability:p,confidence:0.2,records:0,presences:0,absences,recentNote,alarmNote,explanation:"Science + location prior"+(condMatchedAbs.length>0?" · absence-adjusted":"")};
+    return{probability:p,confidence:0.2,records:0,presences:0,absences,recentNote,alarmNote,mobAdd,mobNote,explanation:"Science + location prior"+(condMatchedAbs.length>0?" · absence-adjusted":"")};
   }
   const avgMatch=sig/wt;
   const countBoost=Math.min(Math.log2(1+locSightings.length)*6,22);
@@ -2048,7 +2059,7 @@ function predictLoc(loc,sightings,forecast,alarmBoost){
   prob=Math.round(Math.min(95,Math.max(3,prob)));
   const conf=Math.min(0.95,0.2+dataConf*0.5+(locSightings.length>5?0.1:0));
   const matchQuality=avgMatch>0.7?"strong":avgMatch>0.4?"moderate":"weak";
-  return{probability:prob,confidence:Math.round(conf*100)/100,records:locSightings.length,presences:locSightings.length,absences,recentNote,alarmNote,explanation:`${locSightings.length} sightings · ${matchQuality} condition match`};
+  return{probability:prob,confidence:Math.round(conf*100)/100,records:locSightings.length,presences:locSightings.length,absences,recentNote,alarmNote,mobAdd,mobNote,explanation:`${locSightings.length} sightings · ${matchQuality} condition match`};
 }
 
 // ── Low-Pass Probability ──
@@ -3211,7 +3222,7 @@ function ImportPanel({onImport}){
 // ── PredictionMap — uses native Leaflet layers so markers are ALWAYS pixel-accurate ──
 // L.CircleMarker, L.Polyline and L.Marker all live inside Leaflet's own pane system,
 // so they pan and zoom with tiles automatically — no SVG drift possible.
-function PredictionMap({predictions, sightings, weather, alarmBoost, calibMult=1, eagleEst=null, mapHeight=360, onLocAdded=null, customLocs=[], setCustomLocs=null, onLocClick=null}){
+function PredictionMap({mobBoost=null, predictions, sightings, weather, alarmBoost, calibMult=1, eagleEst=null, mapHeight=360, onLocAdded=null, customLocs=[], setCustomLocs=null, onLocClick=null}){
   const mapRef=React.useRef(null);
   const leafletRef=React.useRef(null);
   const layersRef=React.useRef([]);
@@ -3596,6 +3607,14 @@ function PredictionMap({predictions, sightings, weather, alarmBoost, calibMult=1
     }
     } // end alarm
 
+    // ── 4b. Live mobbing ring around Base (mic radius ~1 km) ──
+    if(mobBoost&&mobBoost.active){
+      const col=mobBoost.strong?"#f87171":"#fb923c";
+      const ring=L.circle([BASE.lat,BASE.lng],{radius:MOB_CFG.innerKm*1000,color:col,weight:2,dashArray:"5,5",
+        fillColor:col,fillOpacity:0.08+0.14*mobBoost.fade,opacity:0.4+0.5*mobBoost.fade,interactive:false}).addTo(map);
+      layersRef.current.push(ring);
+    }
+
     // ══════════════════════════════════════════════════════════════
     // ══════════════════════════════════════════════════════════════════════
     // ROUTE SYSTEM — 2 active layers:
@@ -3768,7 +3787,7 @@ function PredictionMap({predictions, sightings, weather, alarmBoost, calibMult=1
       });
     }
 
-  },[predictions,weather,alarmBoost,eagleEst,sightings,layers]);
+  },[predictions,weather,alarmBoost,mobBoost,eagleEst,sightings,layers]);
 
   return(
     <div style={{position:"relative",borderRadius:14,overflow:"hidden",border:"1px solid rgba(167,139,250,0.15)",display:"flex",flexDirection:"column"}}>
@@ -3981,6 +4000,206 @@ function PredictionMap({predictions, sightings, weather, alarmBoost, calibMult=1
 }
 
 // ── Audio Alert Panel — BirdNET Noisy Miner detections from Supabase ──
+
+// ══════════════════════════════════════════════════════════════════════════
+// MOBBING FEED — routed in from BirdCall Alert (Supabase et_mobbing_recent)
+// Replaces the old Noisy Miner audio panel. Live mobbing lifts eagle
+// probability immediately, strongest at Boundary Rd Base, fading with time
+// and distance. Tap-to-score outcomes self-calibrate the boost size.
+// ══════════════════════════════════════════════════════════════════════════
+const MOB_CFG={
+  strongBase:30,      // % added at Base for a strong mob (miner mob classifier, NM+Crow, 3+ sentinels)
+  possibleBase:15,    // % added at Base for a possible mob (2 sentinels, or sustained miner alarm)
+  holdMin:5,          // full boost for first 5 min
+  fadeMin:25,         // linear fade to zero by 25 min
+  stackStep:5,stackMax:10, // repeated mobbing inside the window adds up to +10
+  innerKm:1.0,outerKm:5.0,edgeFactor:0.15, // mic hears ~1 km; taper to 15% at 5 km, zero beyond
+  priorEagleRate:0.25,minScored:10,multMin:0.4,multMax:1.6,
+};
+
+function mobCalibration(stats){
+  const rows=Array.isArray(stats)?stats:[];
+  const n=rows.reduce((a,r)=>a+Number(r.scored||0),0);
+  const eagle=rows.reduce((a,r)=>a+Number(r.eagle||0),0);
+  const other=rows.reduce((a,r)=>a+Number(r.other_raptor||0),0);
+  const alerts=rows.reduce((a,r)=>a+Number(r.alerts||0),0);
+  if(n<MOB_CFG.minScored){
+    return{mult:1,n,eagle,other,alerts,calibrated:false,
+      note:`Uncalibrated · score ${MOB_CFG.minScored-n} more alert${MOB_CFG.minScored-n===1?"":"s"} to tune the boost`};
+  }
+  const rate=eagle/n;
+  const mult=Math.min(MOB_CFG.multMax,Math.max(MOB_CFG.multMin,rate/MOB_CFG.priorEagleRate));
+  return{mult,n,eagle,other,alerts,calibrated:true,rate,
+    note:`Calibrated · eagle on ${Math.round(rate*100)}% of ${n} scored alerts${other?` (+${other} other raptor)`:""} · boost ×${mult.toFixed(2)}`};
+}
+
+function computeMobBoost(events,stats,nowMs){
+  const cal=mobCalibration(stats);
+  const live=(events||[])
+    .filter(e=>e&&e.sent_at&&e.outcome!=="nothing")
+    .map(e=>{
+      const age=(nowMs-new Date(e.sent_at).getTime())/60000;
+      const fade=age<=MOB_CFG.holdMin?1:age>=MOB_CFG.fadeMin?0:1-(age-MOB_CFG.holdMin)/(MOB_CFG.fadeMin-MOB_CFG.holdMin);
+      return{...e,age:Math.max(0,age),fade};
+    })
+    .filter(e=>e.fade>0)
+    .sort((a,b)=>a.age-b.age);
+  if(!live.length)return null;
+  const latest=live[0];
+  const best=Math.max(...live.map(e=>(e.strong?MOB_CFG.strongBase:MOB_CFG.possibleBase)*e.fade));
+  const stack=Math.min(MOB_CFG.stackMax,MOB_CFG.stackStep*(live.length-1))*latest.fade;
+  const value=Math.round((best+stack)*cal.mult);
+  return{active:value>0,value,strong:live.some(e=>e.strong),latest,count:live.length,
+    ageMin:Math.round(latest.age),fade:latest.fade,cal};
+}
+
+// Distance-weighted share of the mob boost for one location
+function mobBoostFor(loc,mb){
+  if(!mb||!mb.active||!loc||loc.lat==null)return 0;
+  const km=haversineM(BASE.lat,BASE.lng,loc.lat,loc.lng)/1000;
+  let df;
+  if(km<=MOB_CFG.innerKm)df=1;
+  else if(km>=MOB_CFG.outerKm)df=0;
+  else df=1-(1-MOB_CFG.edgeFactor)*((km-MOB_CFG.innerKm)/(MOB_CFG.outerKm-MOB_CFG.innerKm));
+  return Math.round(mb.value*df);
+}
+
+function fmtMobAge(ts){
+  if(!ts)return"";
+  const mins=Math.round((Date.now()-new Date(ts).getTime())/60000);
+  if(mins<1)return"Just now";
+  if(mins<60)return`${mins}m ago`;
+  return`${Math.floor(mins/60)}h ${mins%60}m ago`;
+}
+
+function MobbingPanel({mob,predictions,onScore,onLogEagle}){
+  const events=(mob&&mob.events)||[];
+  const boost=mob&&mob.boost;
+  const[dismissedId,setDismissedId]=React.useState(null);
+  const[logged,setLogged]=React.useState(false);
+  const lastSeen=React.useRef(null);
+
+  // Buzz once when a new mobbing alert lands while the app is open
+  React.useEffect(()=>{
+    const top=events[0];
+    if(!top)return;
+    if(lastSeen.current!==null&&top.id!==lastSeen.current){
+      const age=(Date.now()-new Date(top.sent_at).getTime())/60000;
+      if(age<3){try{navigator.vibrate&&navigator.vibrate(top.strong?[300,120,300,120,300]:[250,120,250]);}catch(e){}}
+    }
+    lastSeen.current=top.id;
+  },[events]);
+
+  const base=(predictions||[]).find(p=>p.id==="boundary_base");
+  const recent=events.filter(e=>(Date.now()-new Date(e.sent_at).getTime())/60000<=360);
+  const latest=boost&&boost.active?boost.latest:null;
+  const showBanner=latest&&latest.id!==dismissedId;
+  const strongCol="#f87171",possCol="#fb923c";
+
+  const scoreBtns=(e,big)=>{
+    const opts=[
+      {k:"eagle",label:"🦅 Eagle",c:"#4ade80"},
+      {k:"other_raptor",label:"Other raptor",c:"#60a5fa"},
+      {k:"nothing",label:"Nothing",c:"#9ca3af"},
+    ];
+    return(
+      <div style={{display:"flex",gap:big?6:4,marginTop:big?10:6,flexWrap:"wrap",justifyContent:big?"center":"flex-start"}}>
+        {opts.map(o=>{
+          const sel=e.outcome===o.k;
+          return(
+            <button key={o.k} onClick={ev=>{ev.stopPropagation();onScore&&onScore(e,o.k);}}
+              style={{padding:big?"8px 14px":"4px 9px",borderRadius:20,cursor:"pointer",fontFamily:"inherit",
+                fontSize:big?13:11,fontWeight:800,
+                border:`1px solid ${sel?o.c:"rgba(255,255,255,0.15)"}`,
+                background:sel?`${o.c}26`:"rgba(0,0,0,0.25)",color:sel?o.c:"rgba(255,255,255,0.75)"}}>
+              {sel?"✓ ":""}{o.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return(
+    <>
+      {showBanner&&(
+        <div style={{position:"relative",width:"100%",borderRadius:16,padding:"16px 14px",marginBottom:8,textAlign:"center",
+          background:latest.strong?"linear-gradient(135deg,rgba(239,68,68,0.32),rgba(220,38,38,0.18))":"linear-gradient(135deg,rgba(251,146,60,0.26),rgba(249,115,22,0.12))",
+          border:`2px solid ${latest.strong?"rgba(248,113,113,0.65)":"rgba(251,146,60,0.55)"}`,
+          boxShadow:`0 0 28px ${latest.strong?"rgba(248,113,113,0.3)":"rgba(251,146,60,0.22)"}`}}>
+          <button onClick={()=>setDismissedId(latest.id)} style={{position:"absolute",top:8,right:10,background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,padding:"4px 10px",color:"rgba(255,255,255,0.6)",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
+          <div style={{fontSize:34,marginBottom:4,animation:"eagleFloat 2s ease-in-out infinite"}}>🦅</div>
+          <div style={{fontSize:20,fontWeight:900,letterSpacing:1,color:latest.strong?strongCol:possCol}}>
+            {latest.strong?"STRONG MOBBING · LOOK UP":"MOBBING · LOOK UP"}
+          </div>
+          <div style={{fontSize:13,color:"rgba(255,255,255,0.8)",margin:"5px 0 8px"}}>{latest.message||latest.title}</div>
+          {base&&(
+            <div style={{display:"inline-block",padding:"5px 12px",borderRadius:20,background:"rgba(0,0,0,0.3)",border:"1px solid rgba(255,255,255,0.12)",fontSize:13,fontWeight:800,color:"#fff"}}>
+              Boundary Rd Base now {base.probability}%{base.mobAdd>0?<span style={{color:"#4ade80"}}> (+{base.mobAdd} mobbing)</span>:null}
+            </div>
+          )}
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.55)",marginTop:6}}>
+            {fmtMobAge(latest.sent_at)} · boost fades over {MOB_CFG.fadeMin} min
+            {latest.clip_url&&<> · <a href={latest.clip_url} target="_blank" rel="noopener" style={{color:"#fbbf24"}}>Play clip</a></>}
+          </div>
+          {scoreBtns(latest,true)}
+        </div>
+      )}
+
+      <div style={{background:recent.length?"rgba(251,146,60,0.06)":"rgba(255,255,255,0.03)",border:`1px solid ${recent.length?"rgba(251,146,60,0.22)":"rgba(255,255,255,0.08)"}`,borderRadius:14,padding:"11px 13px",marginBottom:2}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+            <span style={{fontSize:15}}>📣</span>
+            <div style={{minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:800,color:recent.length?possCol:DS.sub}}>
+                Mobbing Alerts
+                {boost&&boost.active&&<span style={{marginLeft:6,background:boost.strong?strongCol:possCol,color:"#fff",fontSize:10,fontWeight:800,padding:"1px 6px",borderRadius:20}}>LIVE +{boost.value}%</span>}
+              </div>
+              <div style={{fontSize:10,color:DS.muted,marginTop:1}}>
+                {recent.length?`${recent.length} in last 6h`:"Listening via BirdCall Alert"}
+                {mob&&mob.lastFetch&&<span style={{marginLeft:5,opacity:0.5}}>· {fmtMobAge(mob.lastFetch)}</span>}
+                {mob&&mob.error&&<span style={{marginLeft:5,color:"#f87171"}}>· feed offline</span>}
+              </div>
+            </div>
+          </div>
+          <button onClick={()=>{onLogEagle&&onLogEagle("One-tap: eagle seen from Base");setLogged(true);setTimeout(()=>setLogged(false),2500);}}
+            style={{flexShrink:0,padding:"8px 12px",borderRadius:12,border:"1px solid rgba(74,222,128,0.4)",background:logged?"rgba(74,222,128,0.3)":"rgba(74,222,128,0.12)",color:"#4ade80",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
+            {logged?"✓ Logged":"🦅 Eagle now"}
+          </button>
+        </div>
+
+        {recent.length>0&&(
+          <div style={{display:"flex",flexDirection:"column",gap:5,marginTop:9}}>
+            {recent.slice(0,6).map(e=>{
+              const col=e.strong?strongCol:possCol;
+              return(
+                <div key={e.id} style={{padding:"8px 10px",background:`${col}12`,border:`1px solid ${col}40`,borderRadius:9,opacity:e.outcome==="nothing"?0.55:1}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
+                    <span style={{fontSize:10,fontWeight:800,color:col,background:`${col}1f`,padding:"1px 6px",borderRadius:20,flexShrink:0}}>{e.strong?"STRONG":"POSSIBLE"}</span>
+                    <span style={{fontSize:11,color:"rgba(255,255,255,0.8)",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{(e.message||e.title||"").split(" · ")[0]}</span>
+                    <span style={{fontSize:10,color:DS.muted,flexShrink:0}}>{fmtMobAge(e.sent_at)}</span>
+                  </div>
+                  {scoreBtns(e,false)}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {recent.length===0&&(
+          <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8,padding:"6px 9px",background:"rgba(255,255,255,0.03)",borderRadius:7,border:"1px solid rgba(255,255,255,0.05)"}}>
+            <div style={{width:5,height:5,borderRadius:"50%",background:mob&&mob.error?"#f87171":"#4ade80",animation:"pulse2 3s infinite",flexShrink:0}}/>
+            <span style={{fontSize:11,color:DS.muted}}>No mobbing in the last 6h</span>
+          </div>
+        )}
+
+        {boost&&boost.cal&&<div style={{fontSize:10,color:DS.muted,marginTop:8}}>{boost.cal.note}</div>}
+        {!boost&&mob&&mob.cal&&<div style={{fontSize:10,color:DS.muted,marginTop:8}}>{mob.cal.note}</div>}
+      </div>
+    </>
+  );
+}
+
 function AudioAlertPanel(){
   const[alerts,setAlerts]=React.useState([]);
   const[loading,setLoading]=React.useState(true);
@@ -4290,7 +4509,7 @@ function SolarThermalCard({weather}){
   );
 }
 
-function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,notifEnabled,notifThreshold,notifLocId,notifPermission,onRequestNotif,onToggleNotif,onSetThreshold,onSetNotifLoc,calibStats,calibMultiplier}){
+function PredictTab({mob,onScoreMob,onLogEagle,sightings,weather,predictions,alarmBoost,hourly,dailyFx,notifEnabled,notifThreshold,notifLocId,notifPermission,onRequestNotif,onToggleNotif,onSetThreshold,onSetNotifLoc,calibStats,calibMultiplier}){
   const[fDay,setFDay]=useState(0);
   const[fLoc,setFLoc]=useState(()=>notifLocId||"boundary_base");
   const selLoc=LOCS.find(l=>l.id===fLoc)||LOCS[0];
@@ -4468,8 +4687,8 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
   return(
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
 
-      {/* ── AUDIO ALERT FRAMEWORK — top of predict tab ── */}
-      <AudioAlertPanel/>
+      {/* ── MOBBING FEED (BirdCall Alert) — top of predict tab ── */}
+      <MobbingPanel mob={mob} predictions={predictions} onScore={onScoreMob} onLogEagle={onLogEagle}/>
 
       {/* ── SOLAR THERMAL INDEX ── */}
       <SolarThermalCard weather={fwx}/>
@@ -4760,30 +4979,17 @@ function PredictTab({sightings,weather,predictions,alarmBoost,hourly,dailyFx,not
               )}
             </div>
 
-            {/* ── SECTION 2: Mic / Noisy Miner Alerts ── */}
+            {/* ── SECTION 2: Mobbing Alerts (BirdCall Alert feed) ── */}
             <div style={{padding:"12px 13px",background:"rgba(251,146,60,0.06)",border:"1px solid rgba(251,146,60,0.18)",borderRadius:12}}>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                <div>
-                  <div style={{fontSize:13,fontWeight:800,color:"#fb923c"}}>🎤 Noisy Miner Alerts</div>
-                  <div style={{fontSize:11,color:DS.muted,marginTop:1}}>Notify instantly when mic detects alarm calls</div>
-                </div>
-                <div onClick={()=>{try{const cur=localStorage.getItem("eagle_audio_notif_enabled")!=="false";localStorage.setItem("eagle_audio_notif_enabled",cur?"false":"true");}catch(e){}}} style={{width:38,height:22,borderRadius:11,background:"#4ade80",cursor:"pointer",position:"relative",border:"1px solid rgba(74,199,94,0.5)"}}>
-                  <div style={{position:"absolute",top:2,left:17,width:17,height:17,borderRadius:"50%",background:"white"}}/>
-                </div>
-              </div>
+              <div style={{fontSize:13,fontWeight:800,color:"#fb923c"}}>📣 Mobbing Alerts</div>
+              <div style={{fontSize:11,color:DS.muted,marginTop:1,marginBottom:8}}>Routed in from BirdCall Alert · replaces the old Noisy Miner mic alerts</div>
               <div style={{fontSize:12,color:DS.muted,marginBottom:8,lineHeight:1.6}}>
-                🔴 HIGH — NM + Raven/Cockatoo combo or 9s+ sustained<br/>
-                🟠 MEDIUM — 6s+ sustained NM calling<br/>
-                🟡 LOW — Single detection (no push sent)
+                📱 Phone push comes from your BirdCall Alert mobbing topic in the ntfy app. Tapping it opens this tracker.<br/>
+                🔴 STRONG · miner mob call, NM+Crow, sustained alarm with a second sentinel, or 3+ sentinels in 30s · +{MOB_CFG.strongBase}% at Base<br/>
+                🟠 POSSIBLE · 2 sentinel species within 60s, or 10s+ sustained miner alarm · +{MOB_CFG.possibleBase}% at Base<br/>
+                ⏱ Full boost for {MOB_CFG.holdMin} min, fades to zero by {MOB_CFG.fadeMin} min · tapers to {Math.round(MOB_CFG.edgeFactor*100)}% at {MOB_CFG.outerKm} km
               </div>
-              <button onClick={()=>showEagleNotif("🚨 Eagle Alert — Noisy Miner","HIGH ALERT: Eagle likely overhead! Noisy Miner + Australian Raven combination detected at 84% confidence","eagle-audio-high")}
-                style={{width:"100%",padding:"7px",borderRadius:9,border:"1px solid rgba(248,113,113,0.3)",background:"rgba(248,113,113,0.08)",color:"#f87171",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",marginBottom:5}}>
-                🧪 Test HIGH Alert (Eagle overhead!)
-              </button>
-              <button onClick={()=>showEagleNotif("🟠 Alarm — Noisy Miner","MEDIUM: 6s sustained Noisy Miner alarm calling detected","eagle-audio-medium")}
-                style={{width:"100%",padding:"7px",borderRadius:9,border:"1px solid rgba(251,146,60,0.25)",background:"rgba(251,146,60,0.06)",color:"#fb923c",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                🧪 Test MEDIUM Alert (Sustained calling)
-              </button>
+              {mob&&mob.cal&&<div style={{fontSize:12,color:mob.cal.calibrated?"#4ade80":"#fbbf24",lineHeight:1.5}}>{mob.cal.note}</div>}
             </div>
 
           </div>
@@ -8430,6 +8636,48 @@ function App(){
   const[logMode,setLogMode]=useState("form"); // "form" | "map"
   const[mapLogData,setMapLogData]=useState(null); // data from map log
   const[alarmBoost,setAlarmBoost]=useState(null);
+  // ── Mobbing feed (BirdCall Alert) ──
+  const[mobEvents,setMobEvents]=useState([]);
+  const[mobStats,setMobStats]=useState(null);
+  const[mobTick,setMobTick]=useState(0);
+  const[mobFetch,setMobFetch]=useState({lastFetch:null,error:false});
+  const fetchMob=useCallback(async()=>{
+    try{
+      const r=await fetch(SUPA_URL+"/rest/v1/rpc/et_mobbing_recent",{method:"POST",headers:SUPA_HEADERS,body:JSON.stringify({p_hours:6})});
+      if(!r.ok)throw new Error("mob:"+r.status);
+      const d=await r.json();
+      setMobEvents(prev=>{
+        // keep optimistic outcomes until the server reflects them
+        const local={};prev.forEach(e=>{if(e._localOutcome)local[e.id]=e._localOutcome;});
+        return(d||[]).map(e=>local[e.id]&&!e.outcome?{...e,outcome:local[e.id],_localOutcome:local[e.id]}:e);
+      });
+      setMobFetch({lastFetch:new Date(),error:false});
+    }catch(e){setMobFetch(p=>({...p,error:true}));}
+  },[]);
+  const fetchMobStats=useCallback(async()=>{
+    try{
+      const r=await fetch(SUPA_URL+"/rest/v1/rpc/et_mobbing_stats",{method:"POST",headers:SUPA_HEADERS,body:JSON.stringify({p_days:60})});
+      if(r.ok)setMobStats(await r.json());
+    }catch(e){}
+  },[]);
+  useEffect(()=>{
+    fetchMob();fetchMobStats();
+    const a=setInterval(fetchMob,15000);
+    const b=setInterval(fetchMobStats,10*60*1000);
+    const c=setInterval(()=>setMobTick(t=>t+1),30000);
+    const onVis=()=>{if(document.visibilityState==="visible"){fetchMob();setMobTick(t=>t+1);}};
+    document.addEventListener("visibilitychange",onVis);
+    // Tapped a mobbing push → land on the forecast with fresh data
+    try{
+      if(new URLSearchParams(location.search).get("mob")==="1"){
+        setTab("forecast");
+        history.replaceState(null,"",location.pathname);
+      }
+    }catch(e){}
+    return()=>{clearInterval(a);clearInterval(b);clearInterval(c);document.removeEventListener("visibilitychange",onVis);};
+  },[fetchMob,fetchMobStats]);
+  const mobBoost=useMemo(()=>computeMobBoost(mobEvents,mobStats,Date.now()),[mobEvents,mobStats,mobTick]);
+  const mob={events:mobEvents,boost:mobBoost,cal:mobCalibration(mobStats),lastFetch:mobFetch.lastFetch,error:mobFetch.error};
   const[notifThreshold,setNotifThreshold]=useState(()=>{
     try{return parseInt(localStorage.getItem("eagle_notif_threshold")||"0",10);}catch(e){return 0;}
   });
@@ -8764,9 +9012,9 @@ function App(){
   useEffect(()=>{
     const now=getMelbNow();
     const fc={windDir:weather.windDir,windSpeed:weather.windSpeed,windGust:weather.windGust||null,temp:weather.temp,cloudClass:weather.cloudClass||"Unknown",thermalWindow:getTW(now.toISOString()),season:getSeason(now.toISOString())};
-    const pr=LOCS.map(l=>{const p=predictLoc(l,sightings,fc,alarmBoost);const g=getCall(p.probability);return{...l,...p,...g,rawProbability:p.probability,probability:p.probability,call:g.call,callColor:g.callColor,callBg:g.callBg};}).sort((a,b)=>b.probability-a.probability);
+    const pr=LOCS.map(l=>{const p=predictLoc(l,sightings,fc,alarmBoost,mobBoost);const g=getCall(p.probability);return{...l,...p,...g,rawProbability:p.probability,probability:p.probability,call:g.call,callColor:g.callColor,callBg:g.callBg};}).sort((a,b)=>b.probability-a.probability);
     setPredictions(pr);
-  },[weather,sightings,alarmBoost,locsVersion]);
+  },[weather,sightings,alarmBoost,mobBoost,locsVersion]);
 
   // ── Custom locations: load additional user-added locations from localStorage ──
   // The 4 known locations (Martha's Cove, Bruce Rd, Loders Track) are now hardcoded.
@@ -9102,6 +9350,40 @@ function App(){
     localStorage.setItem("eagle-sightings-v2",JSON.stringify(u));
     // Track for active watch session
     if(watchActive){watchLastLogRef.current=Date.now();}
+  };
+  // One-tap eagle record at Boundary Rd Base (same shape as QuickLogWidget)
+  const logEagleNow=(note)=>{
+    const now=getMelbNow();
+    const ts=`${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,"0")}-${String(now.getUTCDate()).padStart(2,"0")}T${String(now.getUTCHours()).padStart(2,"0")}:${String(now.getUTCMinutes()).padStart(2,"0")}`;
+    const loc=LOCS.find(l=>l.id==="boundary_base");
+    quickSave({
+      id:genId(ts),timestamp:ts,
+      vantagePoint:loc?.name||"Boundary Road Base",vantagePointId:"boundary_base",
+      location:loc?.name||"Boundary Road Base",locationId:"boundary_base",
+      locationType:loc?.type||"transit",recordType:"sighting",behavior:"unknown",
+      birdCount:1,countMin:1,countMax:1,pairStatus:"unknown",altitude:"unknown",
+      carryingPrey:false,escort:false,notes:note||"One-tap: eagle seen from Base",
+      windDir:weather.windDir,windSpeed:weather.windSpeed,windGust:weather.windGust||null,
+      temp:weather.temp,cloudClass:weather.cloudClass,conditions:weather.conditions,
+      ecowittLocal:weather.source==="ecowitt",
+      thermalWindow:getTW(ts),season:getSeason(ts),
+      mobbingTriggered:!!(mobBoost&&mobBoost.active),
+      createdAt:new Date().toISOString(),
+    });
+  };
+  // Tap-to-score a mobbing alert; "eagle" also logs a sighting
+  const scoreMob=(e,outcome)=>{
+    if(!e||!e.id)return;
+    const prevOutcome=e.outcome;
+    setMobEvents(p=>p.map(x=>x.id===e.id?{...x,outcome,_localOutcome:outcome}:x));
+    fetch(SUPA_URL+"/rest/v1/mobbing_outcomes",{method:"POST",
+      headers:Object.assign({},SUPA_HEADERS,{"Prefer":"resolution=merge-duplicates"}),
+      body:JSON.stringify({notify_id:e.id,outcome,scored_at:new Date().toISOString()})})
+      .then(r=>{if(!r.ok)throw new Error("score:"+r.status);fetchMobStats();})
+      .catch(()=>setMobEvents(p=>p.map(x=>x.id===e.id?{...x,outcome:prevOutcome,_localOutcome:undefined}:x)));
+    if(outcome==="eagle"&&prevOutcome!=="eagle"){
+      logEagleNow(`Eagle confirmed via mobbing alert: ${(e.message||e.title||"").split(" · ")[0]}`);
+    }
   };
 
   const del=(id)=>{
@@ -9498,7 +9780,7 @@ function App(){
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             {/* ── Full-width map + location detail ── */}
             <Card style={{padding:0,overflow:"hidden",borderRadius:16}}>
-              <PredictionMap predictions={predictions} sightings={sightings} weather={weather} alarmBoost={alarmBoost} calibMult={calibMultiplier} eagleEst={null} mapHeight={400} onLocAdd={(loc)=>{setCustomLocs(p=>[...p,loc]);setLocsVersion(v=>v+1);}} customLocs={customLocs} onLocClick={(id)=>setSelectedLocId(selectedLocId===id?null:id)}/>
+              <PredictionMap mobBoost={mobBoost} predictions={predictions} sightings={sightings} weather={weather} alarmBoost={alarmBoost} calibMult={calibMultiplier} eagleEst={null} mapHeight={400} onLocAdd={(loc)=>{setCustomLocs(p=>[...p,loc]);setLocsVersion(v=>v+1);}} customLocs={customLocs} onLocClick={(id)=>setSelectedLocId(selectedLocId===id?null:id)}/>
 
             {/* ── Location detail panel (shows when marker clicked) ── */}
             {selectedLocId&&(()=>{
@@ -9876,7 +10158,7 @@ function App(){
 
         {tab==="accuracy"&&<AnalysisTab sightings={sightings} calibStats={calibStats} calibMultiplier={calibMultiplier} accuracyOnly={true}/>}
 
-        {tab==="forecast"&&<PredictTab sightings={sightings} weather={weather} predictions={predictions} alarmBoost={alarmBoost} hourly={hourly} dailyFx={dailyFx} notifEnabled={notifEnabled} notifThreshold={notifThreshold} notifLocId={notifLocId} notifPermission={notifPermission} onRequestNotif={requestNotifPermission} onToggleNotif={toggleNotif} onSetThreshold={setThreshold} onSetNotifLoc={setNotifLoc} calibStats={calibStats} calibMultiplier={calibMultiplier} locsVersion={locsVersion}/>}
+        {tab==="forecast"&&<PredictTab mob={mob} onScoreMob={scoreMob} onLogEagle={logEagleNow} sightings={sightings} weather={weather} predictions={predictions} alarmBoost={alarmBoost} hourly={hourly} dailyFx={dailyFx} notifEnabled={notifEnabled} notifThreshold={notifThreshold} notifLocId={notifLocId} notifPermission={notifPermission} onRequestNotif={requestNotifPermission} onToggleNotif={toggleNotif} onSetThreshold={setThreshold} onSetNotifLoc={setNotifLoc} calibStats={calibStats} calibMultiplier={calibMultiplier} locsVersion={locsVersion}/>}
 
         {tab==="history"&&(
           <HistoryPanel
