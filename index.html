@@ -4162,7 +4162,7 @@ function MobbingPanel({mob,predictions,onScore,onLogEagle}){
               </div>
             </div>
           </div>
-          <button onClick={()=>{onLogEagle&&onLogEagle("One-tap: eagle seen from Base");setLogged(true);setTimeout(()=>setLogged(false),2500);}}
+          <button disabled={logged} onClick={()=>{if(logged)return;onLogEagle&&onLogEagle("One-tap: eagle seen from Base");setLogged(true);setTimeout(()=>setLogged(false),4000);}}
             style={{flexShrink:0,padding:"8px 12px",borderRadius:12,border:"1px solid rgba(74,222,128,0.4)",background:logged?"rgba(74,222,128,0.3)":"rgba(74,222,128,0.12)",color:"#4ade80",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"inherit"}}>
             {logged?"✓ Logged":"🦅 Eagle now"}
           </button>
@@ -9352,7 +9352,10 @@ function App(){
     if(watchActive){watchLastLogRef.current=Date.now();}
   };
   // One-tap eagle record at Boundary Rd Base (same shape as QuickLogWidget)
+  const lastEagleLogRef=useRef(0);
   const logEagleNow=(note)=>{
+    if(Date.now()-lastEagleLogRef.current<10000)return;
+    lastEagleLogRef.current=Date.now();
     const now=getMelbNow();
     const ts=`${now.getUTCFullYear()}-${String(now.getUTCMonth()+1).padStart(2,"0")}-${String(now.getUTCDate()).padStart(2,"0")}T${String(now.getUTCHours()).padStart(2,"0")}:${String(now.getUTCMinutes()).padStart(2,"0")}`;
     const loc=LOCS.find(l=>l.id==="boundary_base");
