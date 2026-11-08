@@ -181,8 +181,8 @@ function renderMarks(){
 
 // ---------- data ----------
 function parseNotes(n){ // fallback storage when the segments column isn't there yet
-  const m=(n||"").match(/\[segs:(.*?)\]/);let segs=[];if(m){try{segs=JSON.parse(m[1]);}catch(e){}}
-  return{text:(n||"").replace(/\s*\[segs:.*?\]/,"").trim(),segs};
+  const m=(n||"").match(/\[segs:(\[.*?\])\]/);let segs=[];if(m){try{segs=JSON.parse(m[1]);}catch(e){}}
+  return{text:(n||"").replace(/\s*\[segs:\[.*?\]\]/,"").trim(),segs};
 }
 async function save(label){
   if(!cur)return;
