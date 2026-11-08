@@ -65,6 +65,8 @@ const{useState,useEffect,useRef,useMemo,useCallback}=React;
 
 // ── Supabase config ──
 const SUPA_URL="https://uwgmfxxcphetsxgwxhmu.supabase.co";
+// Weather proxies live on Supabase Edge Functions (moved off Netlify 8 Nov 2026), so any host works.
+const WX_FN=SUPA_URL+"/functions/v1";
 const SUPA_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3Z21meHhjcGhldHN4Z3d4aG11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0MzIyMzcsImV4cCI6MjA4NzAwODIzN30.PsSy4wT17PD-938KZiDILkRhx9oq_nSP2m2A2CkZu_Q";
 const SUPA_HEADERS={"Content-Type":"application/json","apikey":SUPA_KEY,"Authorization":"Bearer "+SUPA_KEY};
 
@@ -719,7 +721,7 @@ async function showEagleNotif(title, body, tag){
 
 // Register service worker for Chrome Android notification support
 if(typeof navigator!=="undefined"&&navigator.serviceWorker&&location.protocol==="https:"){
-  navigator.serviceWorker.register("/sw.js").catch(e=>console.warn("SW registration failed:",e.message));
+  navigator.serviceWorker.register("sw.js").catch(e=>console.warn("SW registration failed:",e.message));
 }
 
 // ── Ecowitt historical weather enrichment ──
@@ -740,7 +742,7 @@ async function fetchEcowittHistoryWx(timestamp, vantagePointId){
     const sightingDate = timestamp.slice(0,10);
     if(sightingDate < ECOWITT_LIVE_SINCE) return null;
     const hour = parseInt(timestamp.slice(11,13));
-    const res = await fetch(`/.netlify/functions/ecowitt-history?date=${sightingDate}&hour=${hour}`);
+    const res = await fetch(`${WX_FN}/ecowitt-history?date=${sightingDate}&hour=${hour}`);
     if(!res.ok) return null;
     const data = await res.json();
     if(data.code !== 0 || !data.data) return null;
@@ -8742,7 +8744,7 @@ function App(){
     // Open-Meteo ALWAYS runs to populate hourly/daily forecast for future windows
     const [ecoResult, omResult] = await Promise.allSettled([
       // Ecowitt live
-      fetch("/.netlify/functions/ecowitt")
+      fetch(WX_FN+"/ecowitt")
         .then(r=>r.ok?r.json():Promise.reject(new Error(`Ecowitt ${r.status}`)))
         .then(d=>d.code===0&&d.data?parseEcowitt(d.data):null)
         .catch(e=>{console.warn("Ecowitt:",e.message);return null;}),
