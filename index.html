@@ -8644,6 +8644,7 @@ function App(){
   const[mobTick,setMobTick]=useState(0);
   const[mobFetch,setMobFetch]=useState({lastFetch:null,error:false});
   const fetchMob=useCallback(async()=>{
+    if(document.hidden)return; // save Supabase egress: no polling in the background
     try{
       const r=await fetch(SUPA_URL+"/rest/v1/rpc/et_mobbing_recent",{method:"POST",headers:SUPA_HEADERS,body:JSON.stringify({p_hours:6})});
       if(!r.ok)throw new Error("mob:"+r.status);
