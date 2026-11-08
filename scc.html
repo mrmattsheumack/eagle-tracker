@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cockatoo Alarm Catalog</title>
+<meta name="robots" content="noindex">
+<style>
+:root{--bg:#0b1015;--card:#131b23;--line:#223040;--text:#e8eef3;--sub:#9fb0bf;--muted:#6f8394;
+  --alarm:#f87171;--normal:#4ade80;--not:#9ca3af;--unsure:#fbbf24;--accent:#38bdf8}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#f4f6f8;--card:#fff;--line:#dde3e8;--text:#14202b;--sub:#4b5d6d;--muted:#7a8a98}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px}
+h1{font-size:18px;margin:0 0 2px}
+.sub{color:var(--sub);font-size:13px}
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.pill{font-size:12px;padding:3px 9px;border-radius:20px;border:1px solid var(--line);color:var(--sub);background:transparent;cursor:pointer;font-family:inherit}
+.pill.on{color:var(--text);border-color:var(--accent)}
+.count b{color:var(--alarm)}
+main{max-width:760px;margin:0 auto;padding:8px 16px 80px}
+h2{font-size:14px;color:var(--sub);margin:22px 0 8px;text-transform:none;font-weight:700}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px}
+.card.l-alarm{border-color:var(--alarm)} .card.l-normal{border-color:var(--normal)} .card.l-not_scc{opacity:.6} .card.l-unsure{border-color:var(--unsure)}
+.top{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.ts{font-weight:700}
+.why{color:var(--sub);font-size:12px}
+.models{color:var(--muted);font-size:12px;margin-top:2px}
+canvas{width:100%;height:110px;display:block;border-radius:8px;background:#000;margin-top:8px;cursor:pointer}
+.axis{display:flex;justify-content:space-between;color:var(--muted);font-size:10px;margin-top:2px}
+audio{width:100%;margin-top:6px;height:36px}
+.btns{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.btns button{padding:9px 4px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--text);font:600 13px system-ui,sans-serif;cursor:pointer}
+.btns button.sel.alarm{background:var(--alarm);border-color:var(--alarm);color:#111}
+.btns button.sel.normal{background:var(--normal);border-color:var(--normal);color:#111}
+.btns button.sel.not_scc{background:var(--not);border-color:var(--not);color:#111}
+.btns button.sel.unsure{background:var(--unsure);border-color:var(--unsure);color:#111}
+.note{width:100%;margin-top:6px;padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--text);font:13px system-ui,sans-serif}
+.err{color:var(--alarm);font-size:12px;margin-top:4px}
+.howto{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-top:12px;font-size:13px;color:var(--sub)}
+.howto b{color:var(--text)}
+@media (max-width:420px){.btns{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Cockatoo alarm catalog</h1>
+  <div class="sub">Listen, then tag each clip. "Alarm call" clips become the training set for the eagle alarm detector.</div>
+  <div class="bar">
+    <span class="count" id="count">Loading…</span>
+    <button class="pill on" data-f="all">All</button>
+    <button class="pill" data-f="todo">Not tagged</button>
+    <button class="pill" data-f="alarm">Alarm calls</button>
+  </div>
+</header>
+<main>
+  <div class="howto"><b>How to use:</b> press play (or tap the picture). The picture is the sound: time left to right, pitch bottom to top (0 to 12 kHz). Tag <b>Alarm call</b> only when you hear the high-pitched eagle call; <b>Normal</b> for an everyday screech; <b>Not cockatoo</b> if there's no cockatoo in it. Anything you're not sure about, tag <b>Unsure</b> and add a note. Group A is the 8 Nov 1:10 pm eagle; B is the clip where BirdNET thought it heard a falcon.</div>
+  <div id="list"></div>
+</main>
+<script>
+const SUPA_URL="https://uwgmfxxcphetsxgwxhmu.supabase.co";
+const SUPA_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV3Z21meHhjcGhldHN4Z3d4aG11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0MzIyMzcsImV4cCI6MjA4NzAwODIzN30.PsSy4wT17PD-938KZiDILkRhx9oq_nSP2m2A2CkZu_Q";
+const H={"apikey":SUPA_KEY,"Authorization":"Bearer "+SUPA_KEY,"Content-Type":"application/json"};
+const CLIP_BASE="https://eaglecam.taile03fa1.ts.net:8443/clips/";
+const LABELS=[["alarm","Alarm call"],["normal","Normal"],["not_scc","Not cockatoo"],["unsure","Unsure"]];
+let items=[],labels={},filter="all";
+
+function el(tag,attrs={},...kids){const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs)){if(k==="class")e.className=v;else if(k.startsWith("on"))e.addEventListener(k.slice(2),v);else e.setAttribute(k,v);}for(const k of kids)e.append(k);return e;}
+const nice=s=>(s||"").replace(/-/g," ").replace(/\b\w/g,c=>c.toUpperCase());
+const fmt=ts=>{if(!ts)return"";const d=new Date(ts.replace(" ","T"));return d.toLocaleDateString("en-AU",{weekday:"short",day:"numeric",month:"short"})+" "+ts.slice(11,16);};
+
+// --- spectrogram (radix-2 FFT) ---
+function fft(re,im){const n=re.length;for(let i=1,j=0;i<n;i++){let b=n>>1;for(;j&b;b>>=1)j^=b;j^=b;if(i<j){[re[i],re[j]]=[re[j],re[i]];[im[i],im[j]]=[im[j],im[i]];}}
+  for(let len=2;len<=n;len<<=1){const a=-2*Math.PI/len,wr=Math.cos(a),wi=Math.sin(a);for(let i=0;i<n;i+=len){let cr=1,ci=0;for(let k=0;k<len/2;k++){const xr=re[i+k+len/2]*cr-im[i+k+len/2]*ci,xi=re[i+k+len/2]*ci+im[i+k+len/2]*cr;re[i+k+len/2]=re[i+k]-xr;im[i+k+len/2]=im[i+k]-xi;re[i+k]+=xr;im[i+k]+=xi;const t=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=t;}}}}
+function magma(t){t=Math.max(0,Math.min(1,t));const r=Math.min(255,Math.round(255*Math.pow(t,0.6)*1.05)),g=Math.round(255*Math.pow(t,1.6)),b=Math.round(255*(0.25+0.5*Math.sin(Math.PI*t))*(1-t*0.6));return[r,g,b];}
+async function drawSpec(canvas,buf){
+  const ctx=new (window.OfflineAudioContext||window.webkitOfflineAudioContext)(1,1,48000);
+  const ab=await ctx.decodeAudioData(buf.slice(0));
+  const x=ab.getChannelData(0),sr=ab.sampleRate,N=1024,hop=Math.max(256,Math.floor(x.length/700));
+  const maxBin=Math.floor(12000/(sr/N)),frames=Math.floor((x.length-N)/hop);
+  const W=canvas.width=frames,Hh=canvas.height=maxBin;const img=ctx2(canvas).createImageData(W,Hh);
+  const win=new Float32Array(N).map((_,i)=>0.5-0.5*Math.cos(2*Math.PI*i/N));
+  const db=new Float32Array(W*Hh);let mx=-1e9;
+  for(let f=0;f<frames;f++){const re=new Float32Array(N),im=new Float32Array(N);for(let i=0;i<N;i++)re[i]=x[f*hop+i]*win[i];fft(re,im);
+    for(let b=0;b<maxBin;b++){const v=10*Math.log10(re[b]*re[b]+im[b]*im[b]+1e-12);db[f*Hh+b]=v;if(v>mx)mx=v;}}
+  for(let f=0;f<W;f++)for(let b=0;b<Hh;b++){const t=(db[f*Hh+b]-(mx-70))/70,[r,g,bl]=magma(t),p=((Hh-1-b)*W+f)*4;img.data[p]=r;img.data[p+1]=g;img.data[p+2]=bl;img.data[p+3]=255;}
+  ctx2(canvas).putImageData(img,0,0);
+}
+const ctx2=c=>c.getContext("2d");
+
+async function loadClip(card,it){
+  if(card.dataset.loaded)return;card.dataset.loaded="1";
+  const canvas=card.querySelector("canvas"),audio=card.querySelector("audio"),err=card.querySelector(".err");
+  try{const r=await fetch(CLIP_BASE+it.clip);if(!r.ok)throw new Error("clip "+r.status);
+    const buf=await r.arrayBuffer();audio.src=URL.createObjectURL(new Blob([buf],{type:"audio/wav"}));
+    await drawSpec(canvas,buf);}
+  catch(e){err.textContent="Couldn't load this clip from the Pi ("+e.message+"). It may have been cleaned up, or the Pi is offline.";}
+}
+
+async function save(it,label,card){
+  const note=card.querySelector(".note").value.trim()||null;
+  const prev=labels[it.clip];labels[it.clip]={label,notes:note};render(false);
+  try{const r=await fetch(SUPA_URL+"/rest/v1/scc_call_labels",{method:"POST",headers:{...H,"Prefer":"resolution=merge-duplicates"},
+      body:JSON.stringify({clip:it.clip,candidate_id:it.id||null,label,group_name:it.g,notes:note,labelled_at:new Date().toISOString()})});
+    if(!r.ok)throw new Error(r.status);}
+  catch(e){labels[it.clip]=prev;render(false);alert("Didn't save ("+e.message+"). Check your connection and try again.");}
+}
+
+function card(it){
+  const cur=labels[it.clip]||{};
+  const c=el("div",{class:"card"+(cur.label?" l-"+cur.label:"")});
+  c.append(el("div",{class:"top"},el("span",{class:"ts"},fmt(it.ts)||"Corpus clip"),el("span",{class:"why"},it.why)));
+  const m=[it.bn&&("BirdNET: "+it.bn),it.bb&&("BoundaryBirds: "+nice(it.bb)),it.dec&&("Decider: "+nice(it.dec))].filter(Boolean).join(" · ");
+  if(m)c.append(el("div",{class:"models"},m));
+  const cv=el("canvas",{width:"700",height:"128",title:"Tap to play"});
+  const au=el("audio",{controls:"",preload:"none"});
+  cv.addEventListener("click",()=>{au.paused?au.play():au.pause();});
+  c.append(cv,el("div",{class:"axis"},el("span",{},"0 s"),el("span",{},"0 to 12 kHz"),el("span",{},"5 s")),au,el("div",{class:"err"}));
+  const btns=el("div",{class:"btns"});
+  for(const[k,txt]of LABELS)btns.append(el("button",{class:k+(cur.label===k?" sel":""),onclick:()=>save(it,k,c)},txt));
+  c.append(btns,el("input",{class:"note",placeholder:"Note (optional), e.g. 'alarm at 3 s'",value:cur.notes||""}));
+  return c;
+}
+
+const io=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){io.unobserve(e.target);loadClip(e.target,e.target._it);}},{rootMargin:"300px"});
+function render(full=true){
+  const n=items.length,done=items.filter(i=>labels[i.clip]).length,al=items.filter(i=>labels[i.clip]?.label==="alarm").length;
+  document.getElementById("count").innerHTML=`${done}/${n} tagged · <b>${al} alarm</b>`;
+  if(!full){document.querySelectorAll(".card").forEach(c=>{const it=c._it;const cur=labels[it.clip]||{};c.className="card"+(cur.label?" l-"+cur.label:"");
+    c.querySelectorAll(".btns button").forEach((b,i)=>b.classList.toggle("sel",LABELS[i][0]===cur.label));});return;}
+  const list=document.getElementById("list");list.innerHTML="";let g=null;
+  for(const it of items){
+    const lab=labels[it.clip]?.label;
+    if(filter==="todo"&&lab)continue; if(filter==="alarm"&&lab!=="alarm")continue;
+    if(it.g!==g){g=it.g;list.append(el("h2",{},g));}
+    const c=card(it);c._it=it;list.append(c);io.observe(c);
+  }
+}
+document.querySelectorAll(".pill").forEach(p=>p.addEventListener("click",()=>{filter=p.dataset.f;document.querySelectorAll(".pill").forEach(x=>x.classList.toggle("on",x===p));render();}));
+
+(async()=>{
+  const [list,lab]=await Promise.all([
+    fetch("scc-candidates.json",{cache:"no-cache"}).then(r=>r.json()),
+    fetch(SUPA_URL+"/rest/v1/scc_call_labels?select=clip,label,notes",{headers:H}).then(r=>r.ok?r.json():[]).catch(()=>[])]);
+  items=list.items;for(const l of lab)labels[l.clip]={label:l.label,notes:l.notes};
+  render();
+})();
+</script>
+</body>
+</html>
